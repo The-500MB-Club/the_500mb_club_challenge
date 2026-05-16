@@ -1,0 +1,118 @@
+# The 500MB Club Challenge - Backend language benchmark on constrained edge hardware
+
+Toolkit do desafio `The 500MB Club`: comparar runtimes de backend em hardware de borda real (Raspberry Pi), com a stack inteira limitada a **2 CPUs e 500 MB de RAM**.
+
+```mermaid
+flowchart LR
+    Dev["📱 Mobile / ESP32 device"]
+
+    subgraph Stack["2 CPUs / 500 MB"]
+        direction TB
+        LB{{"Load balancer :8080<br/>round-robin"}}
+
+        subgraph APIs["API replicas"]
+            direction TB
+            A1["api-1 :8000"]
+            A2["api-2 :8000"]
+            A3["api-3 :8000"]
+        end
+
+        R[("Storage")]
+    end
+
+    Dev --> LB
+
+    LB --> A1
+    LB --> A2
+    LB --> A3
+
+    A1 --> R
+    A2 --> R
+    A3 --> R
+
+    classDef store fill:#1f2933,stroke:#7b8794,color:#e4e7eb;
+    classDef lb fill:#243b53,stroke:#4c63b6,color:#e4e7eb;
+    classDef obs fill:#3e2723,stroke:#a1887f,color:#efebe9;
+    class R store;
+    class LB lb;
+    class Prom obs;
+```
+
+Este repositório contém **apenas a infraestrutura compartilhada**: 2 scripts de carga k6 (smoke e steady) e o contrato OpenAPI. Cada submissão implementa a própria API na linguagem de sua escolha e publica uma imagem Docker que se encaixa nessa moldura.
+
+## Quick start
+
+1. Crie um repositório público com licença aprovada pela OSI (MIT, Apache-2.0, BSD, etc).
+2. Crie duas branches: `main` para a implementação da API e `implementation` com os arquivos necessários para rodar o teste (_docker compose_, _configs_ ).
+3. Implemente a API seguindo o contrato [OpenAPI](openapi.yaml) e as regras de fairness.
+4. Publique a imagem no Docker Hub ou GHCR.
+
+## Regras de fairness
+
+- O desafio é aberto a qualquer runtime, framework ou linguagem de programação.
+- O ambiente de execução é docker-compose com limites estritos de CPU e memória.
+  - O teto agregado de 2 CPUs e 500 MB é inviolável.
+- Não é permitido o uso de modo privilegiado.
+
+## O que cada submissão precisa entregar
+
+1. **Repositório público** com licença aprovada pela OSI (MIT, Apache-2.0, BSD, etc).
+2. **Imagem publicada** no Docker Hub ou GHCR.
+3. **Implementação da API** seguindo o contrato [OpenAPI](openapi.yaml) e as regras de fairness.
+4. Seu load balancer deve ser configurado para usar round-robin estrito, sem heurísticas adaptativas. Deve ser exposto na porta `8000`.
+5. Sua branch `main` deve conter a implementação da API
+6. Sua branch `implementation` deve conter somente os arquivos necessários para rodar o teste (_docker compose_, _configs_) e o arquivo `me.json`.
+    - Seu arquivo `docker-compose.yml` deve estar na raiz do repositório.
+7. Para submeter a implementação, clone este repositório, crie um arquivo JSON com o nome do seu usuário do GitHub dentro da pasta `submissions` contendo o seguinte:
+
+### Arquivo `<username>.json` da pasta `submissions`
+
+```json
+{
+  "repo_url": "https://github.com/<username>/<repository>"
+}
+```
+
+### Arquivo `me.json` na branch `implementation`
+
+Cada submissão deve incluir um arquivo `me.json` com as seguintes informações:
+
+```json
+{
+  "collaborators": [
+    {
+      "name": "Carlos Gandarez",
+      "social_links": ["https://github.com/gandarez", "https://www.linkedin.com/in/gandarez"]
+    },
+    {
+      "name": "Rapha Rossi",
+      "social_links": ["https://www.linkedin.com/in/rapha-rossi"]
+    }
+  ],
+  "stack": ["go", "redis", "nginx"],
+}
+```
+
+## Endpoints obrigatórios
+
+Resumo — detalhamento completo em `openapi.yaml`:
+
+- `POST   /devices/{id}/telemetry`
+- `POST   /devices/{id}/telemetry/batch`
+- `GET    /devices/{id}/telemetry?from=&to=&limit=&cursor=`
+- `GET    /devices/{id}/anomaly`
+- `GET    /healthz`
+- `GET    /readyz`
+- `GET    /metrics`
+
+## Decisões intencionais
+
+**Por que 3 instâncias com 2 CPUs reais?** Sim, é proposital expor o overhead da horizontalização. Runtimes single-process bons em throughput (BEAM, Go, Java moderno) tendem a usar melhor os núcleos sem replicação. O experimento mede exatamente quanto isso custa.
+
+**Por que round-robin estrito?** `least_conn` ou heurísticas adaptativas escondem a variância de tail latency entre as instâncias. O round-robin fixo expõe quem tem GC stop-the-world ou pause patológico.
+
+## Hardware
+
+O desafio roda em Raspberry Pi 5, 8 GB de RAM, 500 GB de armazenamento SSD, Raspberry Pi OS (64-bit) Debian Bookworm, ARM64.
+
+![Raspberry Pi 5](assets/pi5.jpeg)

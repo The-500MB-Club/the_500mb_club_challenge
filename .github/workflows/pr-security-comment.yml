@@ -1,0 +1,88 @@
+name: PR Security Comment
+
+# ---------------------------------------------------------------------------
+# Padrao seguro recomendado pelo GitHub para comentar em PRs de forks.
+#
+# O workflow "PR Security Gate" roda como `pull_request` (sem segredos, sem
+# permissao de escrita) e sobe o relatorio como artifact. ESTE workflow e
+# disparado pela conclusao daquele via `workflow_run`, roda no contexto da
+# BASE do repo (tem permissao de escrita no PR) e SOMENTE le um artifact de
+# texto + escreve um comentario. Nunca faz checkout nem executa codigo do PR.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_run:
+    workflows: ["PR Security Gate"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request'
+    steps:
+      - name: Baixa artifacts do run de validação
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
+          merge-multiple: true
+
+      - name: Comenta no PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let prNumber;
+            try {
+              prNumber = fs.readFileSync('artifacts/pr_number', 'utf8').trim();
+            } catch (e) {
+              core.warning('pr_number ausente; nada a comentar');
+              return;
+            }
+
+            let body;
+            try {
+              body = fs.readFileSync('artifacts/report.md', 'utf8');
+            } catch (e) {
+              body = '_Relatório de segurança não gerado (nenhum compose alterado?)._';
+            }
+
+            const conclusion = context.payload.workflow_run.conclusion;
+            const header = conclusion === 'success'
+              ? '## ✅ The 500MB Club — PR Security Gate: APROVADO\n\n'
+              : '## ❌ The 500MB Club — PR Security Gate: REPROVADO\n\n' +
+                'Este PR **não pode ser mesclado** até que as violações de ' +
+                '`docs/SECURITY.md` abaixo sejam resolvidas.\n\n';
+
+            const marker = '<!-- the-500mb-club-security-gate -->';
+            const fullBody = `${marker}\n${header}${body}`;
+
+            // Atualiza o comentário existente em vez de empilhar novos.
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(prNumber),
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: fullBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number(prNumber),
+                body: fullBody,
+              });
+            }

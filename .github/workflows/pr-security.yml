@@ -1,0 +1,271 @@
+name: PR Security Gate
+
+# ---------------------------------------------------------------------------
+# NOVO FLUXO (o PR nao traz mais o compose):
+#
+#   1. O PR adiciona exatamente um arquivo `submissions/<username>.json`.
+#   2. resolve_submission.py valida (1) arquivo único e (2) que <username>
+#      e o dono do repositório em `repo_url`. Tambem barra repo_url fora de
+#      github.com (anti-SSRF) ANTES de qualquer clone.
+#   3. O workflow faz `git ls-remote` para verificar a branch `implementation`.
+#      Se existir, clona só essa branch (--depth 1 --single-branch).
+#   4. validate_compose.py + audit_image.sh rodam sobre o clone.
+#   5. Tudo vira um comentario unico com checklist no PR (via workflow_run).
+#
+# MODELO DE SEGURANCA (ler antes de editar):
+#   * Trigger `pull_request`: token read-only, SEM segredos.
+#   * As regras (scripts/*) sao checkout do BASE ref, nao do PR - o PR nao
+#     consegue reescrever o proprio validador.
+#   * NENHUM codigo do PR nem do repo clonado são executados. Só parsing de
+#     YAML/JSON, git ls-remote/clone, docker pull/inspect/history. Nenhum
+#     `docker compose up`, nenhum script da submissão, nenhum hook git.
+#   * repo_url é validado por regex estrita (só github.com) antes do clone.
+#   * Comentário no PR: workflow separado via workflow_run (contexto base).
+# ---------------------------------------------------------------------------
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "submissions/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-security-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Resolve + validate submission
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      GIT_TERMINAL_PROMPT: "0"          # git nunca trava pedindo credencial
+    steps:
+      # 1. Regras a partir do BASE ref (PR nao altera o proprio validador).
+      - name: Checkout base (regras)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      # 2. Conteudo do PR. Apenas LIDO (para achar o submissions/*.json).
+      - name: Checkout PR (apenas leitura)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0          # precisamos do base para o diff
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instala PyYAML
+        run: pip install --quiet pyyaml
+
+      # 3. Lista de arquivos alterados no PR (git puro, sem action de terceiro).
+      - name: Diff do PR
+        working-directory: pr
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          git diff --name-only --diff-filter=ACMRD "$base...$head" \
+            > /tmp/changed.txt || true
+          echo "Arquivos alterados:"; cat /tmp/changed.txt
+
+      - name: Prepara relatório
+        run: |
+          {
+            echo "## The 500MB Club — PR Security Gate"
+            echo
+          } > /tmp/report.md
+
+      # 4. Validações 1 e 2 (resolve_submission.py). Sem rede.
+      - name: Resolve submissão (validações 1 e 2)
+        id: resolve
+        run: |
+          set -uo pipefail
+          if python3 base/scripts/resolve_submission.py \
+               --changed-files /tmp/changed.txt \
+               --pr-dir pr \
+               --md /tmp/frag-resolve.md \
+               --meta-out /tmp/meta.env; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/frag-resolve.md >> /tmp/report.md
+          echo >> /tmp/report.md
+          # exporta meta como saídas do step
+          while IFS='=' read -r k v; do
+            echo "${k,,}=${v}" >> "$GITHUB_OUTPUT"
+          done < /tmp/meta.env
+
+      # 5. Validação 3: branch `implementation` existe? (ls-remote, sem clone)
+      - name: Valida branch implementation
+        id: branch
+        if: steps.resolve.outputs.ok == '1'
+        run: |
+          set -uo pipefail
+          url="${{ steps.resolve.outputs.repo_url }}"
+          echo "### Repositório" >> /tmp/report.md
+          echo >> /tmp/report.md
+          if timeout 30 git ls-remote --heads "$url" implementation \
+               | grep -q 'refs/heads/implementation'; then
+            echo "- [x] Branch \`implementation\` existe em \`$url\`" >> /tmp/report.md
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "- [ ] Branch \`implementation\` existe em \`$url\` — ❌" >> /tmp/report.md
+            echo "  - ❌ branch ausente ou repositório inacessível" >> /tmp/report.md
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+          echo >> /tmp/report.md
+
+      # 6. Clona SOMENTE a branch implementation, raso. Nada é executado.
+      - name: Clona branch implementation
+        id: clone
+        if: steps.branch.outputs.ok == '1'
+        run: |
+          set -uo pipefail
+          url="${{ steps.resolve.outputs.repo_url }}"
+          rm -rf /tmp/impl
+          if timeout 120 git -c protocol.file.allow=never \
+               clone --depth 1 --single-branch --branch implementation \
+               --no-tags "$url" /tmp/impl; then
+            # remover .git e qualquer hook por segurança extra
+            rm -rf /tmp/impl/.git
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "- [ ] Clone da branch implementation — ❌" >> /tmp/report.md
+            echo "  - ❌ git clone falhou" >> /tmp/report.md
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 7. Descobre o compose no repo clonado.
+      - name: Descobre compose no clone
+        id: discover
+        if: steps.clone.outputs.ok == '1'
+        run: |
+          set -uo pipefail
+          cd /tmp/impl
+          files=$(ls docker-compose*.yml docker-compose*.yaml 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "- [ ] Repositório contém docker-compose — ❌" >> /tmp/report.md
+            echo "  - ❌ nenhum docker-compose*.yml na branch implementation" >> /tmp/report.md
+            echo "files=" >> "$GITHUB_OUTPUT"
+          else
+            echo "- [x] Repositório contém docker-compose" >> /tmp/report.md
+            echo "files=$(echo $files | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          fi
+          echo >> /tmp/report.md
+
+      # 8. Valida o compose do clone (validate_compose.py).
+      - name: Valida compose
+        id: static
+        if: steps.discover.outputs.files != ''
+        working-directory: /tmp/impl
+        env:
+          API_IMAGE: "placeholder/for-config-expand:latest"
+        run: |
+          set -uo pipefail
+          overall=0
+          for f in ${{ steps.discover.outputs.files }}; do
+            echo "::group::$f"
+            expanded="/tmp/expanded-$(basename "$f").yml"
+            if docker compose -f "$f" config > "$expanded" 2>/tmp/cfgerr; then
+              src="$expanded"
+            else
+              echo "compose config falhou; validando bruto:"; cat /tmp/cfgerr
+              src="$f"
+            fi
+            md="/tmp/md-$(basename "$f").md"
+            if python3 "$GITHUB_WORKSPACE/base/scripts/validate_compose.py" \
+                 --compose "$src" --raw "$f" --md "$md"; then :; else overall=1; fi
+            echo "<!-- compose: $f -->" >> /tmp/report.md
+            cat "$md" >> /tmp/report.md
+            echo >> /tmp/report.md
+            echo "::endgroup::"
+          done
+          echo "result=$overall" >> "$GITHUB_OUTPUT"
+
+      # 9. Imagem: do JSON (campo image) ou extraída do compose do clone.
+      - name: Resolve imagem
+        id: image
+        if: steps.discover.outputs.files != ''
+        run: |
+          set -uo pipefail
+          ref="${{ steps.resolve.outputs.image }}"
+          if [ -z "$ref" ]; then
+            cd /tmp/impl
+            ref=$(grep -hoE 'image:[[:space:]]*[^[:space:]]+' docker-compose*.y*ml 2>/dev/null \
+                  | grep -viE 'nginx|redis|haproxy|caddy|traefik|envoy|placeholder' \
+                  | head -1 | awk '{print $2}' | sed 's/["'\'']//g' || true)
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Imagem: '${ref:-<nenhuma>}'"
+
+      # 10. Auditoria da imagem (pull/inspect/history; NÃO executa a imagem).
+      - name: Auditoria da imagem
+        id: imgaudit
+        if: steps.image.outputs.ref != ''
+        run: |
+          set -uo pipefail
+          chmod +x base/scripts/audit_image.sh
+          if base/scripts/audit_image.sh "${{ steps.image.outputs.ref }}" \
+               /tmp/img.md; then
+            echo "result=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=1" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/img.md >> /tmp/report.md
+
+      # 11. Step Summary (sempre visível na aba Actions).
+      - name: Step summary
+        if: always()
+        run: |
+          {
+            echo "# 🛡️ The 500MB Club — PR Security Gate"
+            echo
+            cat /tmp/report.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 12. Empacota relatório + número do PR para o job de comentário.
+      - name: Empacota artifact
+        if: always()
+        run: |
+          mkdir -p /tmp/out
+          cp /tmp/report.md /tmp/out/report.md 2>/dev/null || \
+            echo "_relatório vazio_" > /tmp/out/report.md
+          echo "${{ github.event.pull_request.number }}" > /tmp/out/pr_number
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: /tmp/out
+          retention-days: 5
+          if-no-files-found: ignore
+
+      # 13. Veredito: bloqueia o merge se qualquer etapa falhou.
+      - name: Veredito
+        if: always()
+        run: |
+          resolve="${{ steps.resolve.outputs.ok || '0' }}"
+          branch="${{ steps.branch.outputs.ok || '0' }}"
+          clone="${{ steps.clone.outputs.ok || '0' }}"
+          static="${{ steps.static.outputs.result || '1' }}"
+          img="${{ steps.imgaudit.outputs.result || '0' }}"
+          echo "resolve=$resolve branch=$branch clone=$clone static=$static img=$img"
+          if [ "$resolve" != "1" ] || [ "$branch" != "1" ] \
+             || [ "$clone" != "1" ] || [ "$static" != "0" ] \
+             || [ "$img" != "0" ]; then
+            echo "::error::Submissão reprovada. Veja o checklist no comentário do PR."
+            exit 1
+          fi
+          echo "Submissão dentro de todas as regras."
