@@ -57,12 +57,13 @@ Marcadas como `WARN` no checklist. O PR não é reprovado automaticamente, mas o
 - `cpus` ausente em algum serviço — impede somar o orçamento agregado com confiança.
 - Imagem desenhada para rodar como root — o compose endurecido força non-root, mas é sinal amarelo.
 - Build com download de rede nas camadas (visto em `docker history`) — conferir contra o repositório open source.
+- Manifesto não declara `arm64` explicitamente — pode ser imagem **single-arch** empurrada sem índice OCI (arquitetura fica só no `config` blob). Não bloqueia o PR, mas o revisor deve confirmar no `docker inspect` que a imagem é de fato arm64 nativa antes do merge.
 
 ## 3. Auditoria da imagem
 
 `scripts/audit_image.sh` roda no mesmo gate, sem executar a imagem:
 
-- **arm64 nativo** presente no manifesto (também é regra do desafio; emulação QEMU desclassifica).
+- **arm64 nativo** declarado no manifesto (também é regra do desafio; emulação QEMU desclassifica). Ausência da declaração explícita é **ressalva**, não fail — imagens single-arch empurradas sem índice OCI ainda podem ser arm64 nativas; o revisor confirma manualmente.
 - Imagem **pública e baixável**.
 - Imagem **não desenhada para root** (ressalva se for).
 - **ENTRYPOINT/CMD sem shell+download**.
