@@ -475,7 +475,7 @@ def render_md(rep: Report, agg) -> str:
     lines += [
         "---",
         "_Gerado automaticamente pelo PR Security Gate. "
-        "Regras completas em [`SECURITY.md`](SECURITY.md)._",
+        "Regras completas em [`SECURITY.md`](https://github.com/gandarez/the_500mb_club_challenge/blob/master/SECURITY.md)._",
     ]
     return "\n".join(lines)
 
