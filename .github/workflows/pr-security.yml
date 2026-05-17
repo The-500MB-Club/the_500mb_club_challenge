@@ -158,7 +158,6 @@ jobs:
             echo "ok=0" >> "$GITHUB_OUTPUT"
           fi
           cat /tmp/me.md >> /tmp/report.md
-          echo >> /tmp/report.md
 
       # 8. Descobre o compose no repo clonado.
       - name: Descobre compose no clone
