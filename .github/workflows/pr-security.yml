@@ -124,7 +124,6 @@ jobs:
             echo "  - ❌ branch ausente ou repositório inacessível" >> /tmp/report.md
             echo "ok=0" >> "$GITHUB_OUTPUT"
           fi
-          echo >> /tmp/report.md
 
       # 6. Clona SOMENTE a branch implementation, raso. Nada é executado.
       - name: Clona branch implementation
