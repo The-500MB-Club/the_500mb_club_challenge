@@ -1,8 +1,8 @@
 # API
 
-A sua API deve expor exatamente os endpoints abaixo na porta **8000**. O tráfego chega sempre através do load balancer na porta **8080**, em round-robin entre as 3 instâncias (veja [ARQUITETURA.md](./ARQUITETURA.md)).
+A sua API deve expor exatamente os endpoints abaixo. O tráfego chega sempre através do load balancer na porta **8080**, em round-robin entre as 3+ instâncias.
 
-Toda resposta, em qualquer endpoint, **deve** incluir o header `X-Instance-Id` com o identificador da instância que respondeu (valor da env `INSTANCE_ID`). O verificador de distribuição do load balancer depende dele.
+Toda resposta, em qualquer endpoint, **deve** incluir o header `X-Instance-Id` com o identificador da instância que respondeu. O verificador de distribuição do load balancer depende dele.
 
 ## `GET /healthz`
 
@@ -22,7 +22,7 @@ Ingere um único ponto de telemetria de um dispositivo. O `id` no path identific
 
 O formato do payload é como o seguinte exemplo:
 
-```
+```json
 {
   "ts": 1715800000000,
   "lat": -23.5505,
@@ -65,7 +65,7 @@ Ingere de 1 a 100 pontos de telemetria em uma única requisição. Mesmo padrão
 
 O formato do payload é como o seguinte exemplo:
 
-```
+```json
 {
   "points": [
     {
@@ -101,7 +101,7 @@ O formato do payload é como o seguinte exemplo:
 
 A sua API deve responder no formato deste exemplo:
 
-```
+```json
 {
   "accepted": 2
 }
@@ -132,7 +132,7 @@ Consulta os pontos de um device dentro de uma janela temporal, com paginação p
 
 A sua API deve responder no formato deste exemplo:
 
-```
+```json
 {
   "points": [
     {
@@ -170,7 +170,7 @@ A magnitude de cada ponto é `sqrt(ax² + ay² + az²)`. O z-score é o do ponto
 
 A sua API deve responder no formato deste exemplo:
 
-```
+```json
 {
   "z_score": 4.21,
   "samples": 256,

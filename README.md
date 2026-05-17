@@ -1,6 +1,8 @@
 # The 500MB Club Challenge - Backend language benchmark on constrained edge hardware
 
-Toolkit do desafio `The 500MB Club`: comparar runtimes de backend em hardware de borda real (Raspberry Pi), com a stack inteira limitada a **2 CPUs e 500 MB de RAM**.
+Você vai construir um serviço de ingestão e consulta de telemetria de dispositivos (**lat/lon, bateria, aceleração nos 3 eixos**). A escolha do domínio é proposital: tem write-heavy realista, leitura por janela temporal e uma rota CPU-bound para evitar que o vencedor seja só "quem faz menos coisa".
+
+A ideia é comparar runtimes de backend em hardware de borda real (Raspberry Pi), com a stack inteira limitada a **2 CPUs e 500 MB de RAM**.
 
 ```mermaid
 flowchart LR
@@ -38,14 +40,21 @@ flowchart LR
     class Prom obs;
 ```
 
+## Cenário
+
+Uma plataforma de delivery e mobilidade (_pense nos apps de delivery e mobilidade líderes do mercado_) que opera milhares de entregadores e motoristas simultâneos numa cidade. Cada profissional roda um app que reporta posição GPS, bateria do celular e acelerômetro continuamente enquanto está em rota. O backend precisa: ingerir esse fluxo em escala, deixar o cliente final acompanhar "seu pedido está chegando" (_query da rota recente_), e detectar anomalias operacionais (entregador parado tempo demais, possível acidente via acelerômetro, desvio suspeito).
+
+Esse é o serviço que, na vida real, fica atrás do mapinha que se mexe na tela quando você espera o jantar ou o carro. É write-heavy, latência-sensível na cauda (_mapa que trava irrita o cliente_), e roda em escala.
+
 Este repositório contém **apenas a infraestrutura compartilhada**: 2 scripts de carga k6 (smoke e steady) e o contrato OpenAPI. Cada submissão implementa a própria API na linguagem de sua escolha e publica uma imagem Docker que se encaixa nessa moldura.
 
 ## Quick start
 
 1. Crie um repositório público com licença aprovada pela OSI (MIT, Apache-2.0, BSD, etc).
 2. Crie duas branches: `main` para a implementação da API e `implementation` com os arquivos necessários para rodar o teste (_docker compose_, _configs_ ).
-3. Implemente a API seguindo o contrato [OpenAPI](openapi.yaml) e as regras de fairness.
+3. Implemente a API seguindo o contrato [OpenAPI](openapi.yaml) e as regras de fairness. Mais detalhes em [API.md](API.md).
 4. Publique a imagem no Docker Hub ou GHCR.
+5. [Abra o PR](SUBMITTING.md)!
 
 ## Regras de fairness
 
@@ -89,13 +98,13 @@ Cada submissão deve incluir um arquivo `me.json` com as seguintes informações
       "social_links": ["https://www.linkedin.com/in/rapha-rossi"]
     }
   ],
-  "stack": ["go", "redis", "nginx"],
+  "stack": ["go", "redis", "nginx"]
 }
 ```
 
 ## Endpoints obrigatórios
 
-Resumo — detalhamento completo em `openapi.yaml`:
+Resumo — detalhamento completo em `openapi.yaml` e [API.md](API.md):
 
 - `POST   /devices/{id}/telemetry`
 - `POST   /devices/{id}/telemetry/batch`

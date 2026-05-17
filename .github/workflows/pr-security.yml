@@ -145,7 +145,22 @@ jobs:
             echo "ok=0" >> "$GITHUB_OUTPUT"
           fi
 
-      # 7. Descobre o compose no repo clonado.
+      # 7. Valida me.json na raiz da branch implementation.
+      - name: Valida me.json
+        id: mejson
+        if: steps.clone.outputs.ok == '1'
+        run: |
+          set -uo pipefail
+          if python3 "$GITHUB_WORKSPACE/base/scripts/validate_me_json.py" \
+               --me-json /tmp/impl/me.json --md /tmp/me.md; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/me.md >> /tmp/report.md
+          echo >> /tmp/report.md
+
+      # 8. Descobre o compose no repo clonado.
       - name: Descobre compose no clone
         id: discover
         if: steps.clone.outputs.ok == '1'
@@ -163,7 +178,7 @@ jobs:
           fi
           echo >> /tmp/report.md
 
-      # 8. Valida o compose do clone (validate_compose.py).
+      # 9. Valida o compose do clone (validate_compose.py).
       - name: Valida compose
         id: static
         if: steps.discover.outputs.files != ''
@@ -192,7 +207,7 @@ jobs:
           done
           echo "result=$overall" >> "$GITHUB_OUTPUT"
 
-      # 9. Imagem: do JSON (campo image) ou extraída do compose do clone.
+      # 10. Imagem: do JSON (campo image) ou extraída do compose do clone.
       - name: Resolve imagem
         id: image
         if: steps.discover.outputs.files != ''
@@ -208,7 +223,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "Imagem: '${ref:-<nenhuma>}'"
 
-      # 10. Auditoria da imagem (pull/inspect/history; NÃO executa a imagem).
+      # 11. Auditoria da imagem (pull/inspect/history; NÃO executa a imagem).
       - name: Auditoria da imagem
         id: imgaudit
         if: steps.image.outputs.ref != ''
@@ -223,7 +238,7 @@ jobs:
           fi
           cat /tmp/img.md >> /tmp/report.md
 
-      # 11. Step Summary (sempre visível na aba Actions).
+      # 12. Step Summary (sempre visível na aba Actions).
       - name: Step summary
         if: always()
         run: |
@@ -233,7 +248,7 @@ jobs:
             cat /tmp/report.md
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 12. Empacota relatório + número do PR para o job de comentário.
+      # 13. Empacota relatório + número do PR para o job de comentário.
       - name: Empacota artifact
         if: always()
         run: |
@@ -251,19 +266,20 @@ jobs:
           retention-days: 5
           if-no-files-found: ignore
 
-      # 13. Veredito: bloqueia o merge se qualquer etapa falhou.
+      # 14. Veredito: bloqueia o merge se qualquer etapa falhou.
       - name: Veredito
         if: always()
         run: |
           resolve="${{ steps.resolve.outputs.ok || '0' }}"
           branch="${{ steps.branch.outputs.ok || '0' }}"
           clone="${{ steps.clone.outputs.ok || '0' }}"
+          mejson="${{ steps.mejson.outputs.ok || '0' }}"
           static="${{ steps.static.outputs.result || '1' }}"
           img="${{ steps.imgaudit.outputs.result || '0' }}"
-          echo "resolve=$resolve branch=$branch clone=$clone static=$static img=$img"
+          echo "resolve=$resolve branch=$branch clone=$clone mejson=$mejson static=$static img=$img"
           if [ "$resolve" != "1" ] || [ "$branch" != "1" ] \
-             || [ "$clone" != "1" ] || [ "$static" != "0" ] \
-             || [ "$img" != "0" ]; then
+             || [ "$clone" != "1" ] || [ "$mejson" != "1" ] \
+             || [ "$static" != "0" ] || [ "$img" != "0" ]; then
             echo "::error::Submissão reprovada. Veja o checklist no comentário do PR."
             exit 1
           fi
