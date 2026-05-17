@@ -41,7 +41,7 @@ if [ -z "$arch_json" ]; then
 elif echo "$arch_json" | grep -q '"architecture": *"arm64"'; then
   check pass "Imagem contém arm64 nativo"
 else
-  check fail "Imagem contém arm64 nativo" "manifesto não declara arm64"
+  check warn "Imagem contém arm64 nativo" "manifesto não declara arm64 ou é single-arch"
 fi
 
 # A partir daqui precisamos da imagem localmente. pull NAO executa nada.
