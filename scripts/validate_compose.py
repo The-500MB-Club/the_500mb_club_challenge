@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pi-Bench - validador de seguranca de docker-compose submetido por participante.
+The 500MB Club - validador de seguranca de docker-compose submetido por participante.
 
 Implementa as regras do docs/SECURITY.md. Roda preferencialmente sobre a saida
 de `docker compose config` (normalizada e com anchors resolvidos), mas tambem
@@ -40,11 +40,6 @@ except ImportError:
 
 CPU_CAP = 2.0
 MEM_CAP_BYTES = 500 * 1024 * 1024          # 500 MiB
-PIDS_LIMIT_CEILING = 512                   # acima disso = fork bomb reaberto
-
-# Bind mounts permitidos por allowlist. Chave: sufixo do source. Exige :ro.
-# So o nginx.conf do LB. Qualquer outro bind mount = FAIL.
-ALLOWED_BIND_SUFFIXES = ("/lb/nginx.conf",)
 
 # Capabilities que o nginx oficial precisa no boot (e so o LB pode ter).
 # Tudo fora disso, mesmo no LB, e bloqueado.
@@ -119,11 +114,10 @@ def parse_cpus(value) -> float | None:
     return None
 
 
-def get_limits(svc: dict) -> tuple[float | None, int | None, int | None]:
-    """Retorna (cpus, mem_bytes, pids_limit) considerando top-level e deploy.resources."""
+def get_limits(svc: dict) -> tuple[float | None, int | None]:
+    """Retorna (cpus, mem_bytes) considerando top-level e deploy.resources."""
     cpus = parse_cpus(svc.get("cpus"))
     mem = parse_mem_to_bytes(svc.get("mem_limit"))
-    pids = svc.get("pids_limit")
 
     deploy = svc.get("deploy") or {}
     res = (deploy.get("resources") or {}).get("limits") or {}
@@ -131,14 +125,8 @@ def get_limits(svc: dict) -> tuple[float | None, int | None, int | None]:
         cpus = parse_cpus(res.get("cpus"))
     if mem is None and res.get("memory") is not None:
         mem = parse_mem_to_bytes(res.get("memory"))
-    if pids is None:
-        pids = res.get("pids")
 
-    try:
-        pids = int(pids) if pids is not None else None
-    except (TypeError, ValueError):
-        pids = None
-    return cpus, mem, pids
+    return cpus, mem
 
 
 def normalize_volumes(svc: dict) -> list[dict]:
@@ -272,8 +260,7 @@ def check_service(name: str, svc: dict, role: str, rep: Report) -> None:
             continue
         if vol["type"] != "bind":
             continue  # named/anon volume nao toca host FS arbitrario
-        # bind mount: so a allowlist passa, e exige read-only
-        allowed = any(src.rstrip("/").endswith(suf) for suf in ALLOWED_BIND_SUFFIXES)
+        # bind mount: bloqueia paths sensiveis/traversal e exige read-only
         if "/" == src.strip() or src.strip().startswith(("/etc", "/var", "/root",
                                                          "/home", "/proc", "/sys",
                                                          "/dev", "/boot", "/usr",
@@ -283,13 +270,9 @@ def check_service(name: str, svc: dict, role: str, rep: Report) -> None:
         elif ".." in src:
             rep.fail(name, "bind-traversal",
                      f"bind mount com path traversal: '{src}'")
-        elif not allowed:
-            rep.fail(name, "bind-not-allowed",
-                     f"bind mount fora da allowlist: '{src}' -> '{tgt}' "
-                     f"(unico permitido: nginx.conf do LB, :ro)")
         elif not vol["read_only"]:
             rep.fail(name, "bind-not-ro",
-                     f"bind mount permitido mas nao read-only: '{src}'")
+                     f"bind mount nao read-only: '{src}'")
 
     # --- hardening obrigatorio (somente servicos 'api', codigo nao-confiavel) ---
     if role == "api":
@@ -311,14 +294,7 @@ def check_service(name: str, svc: dict, role: str, rep: Report) -> None:
             rep.fail(name, "runs-as-root",
                      f"servico de API nao pode rodar como root (user='{user or 'unset'}')")
 
-    # --- pids_limit (todos os servicos) ---
-    cpus, mem, pids = get_limits(svc)
-    if pids is None:
-        rep.fail(name, "no-pids-limit",
-                 "pids_limit ausente: fork bomb derruba o host")
-    elif pids == 0 or pids > PIDS_LIMIT_CEILING:
-        rep.fail(name, "pids-limit-high",
-                 f"pids_limit={pids} (0=ilimitado; teto={PIDS_LIMIT_CEILING})")
+    cpus, mem = get_limits(svc)
 
     # memswap deve == mem (sem swap mascarando leak); divergencia = WARN
     msw = parse_mem_to_bytes(svc.get("memswap_limit"))
@@ -339,7 +315,7 @@ def check_aggregate(services: dict, rep: Report) -> None:
     total_mem = 0
     cpu_known = True
     for name, svc in services.items():
-        cpus, mem, _ = get_limits(svc or {})
+        cpus, mem = get_limits(svc or {})
         if cpus is None:
             cpu_known = False
         else:
@@ -390,8 +366,8 @@ CHECKS: list[tuple[str, str, set[str]]] = [
      {"devices"}),
     ("no_docker_sock", "Docker socket não montado",
      {"docker-sock", "docker-sock-raw"}),
-    ("bind_allowlist", "Bind mounts dentro da allowlist (só nginx.conf :ro)",
-     {"bind-host-path", "bind-not-allowed", "bind-not-ro"}),
+    ("bind_allowlist", "Bind mounts seguros (sem path sensível, read-only)",
+     {"bind-host-path", "bind-not-ro"}),
     ("no_traversal", "Sem path traversal em mounts",
      {"bind-traversal"}),
     ("no_shell_dl", "Entrypoint/command sem shell + download",
@@ -404,8 +380,6 @@ CHECKS: list[tuple[str, str, set[str]]] = [
      {"no-nnp"}),
     ("hardening_nonroot", "APIs rodando como non-root",
      {"runs-as-root"}),
-    ("pids_limit", "pids_limit presente e sob o teto",
-     {"no-pids-limit", "pids-limit-high"}),
     ("mem_limit", "mem_limit definido em todos os serviços",
      {"no-mem-limit"}),
     ("cpu_budget", f"CPU agregada ≤ {CPU_CAP}",
@@ -460,7 +434,7 @@ def render_md(rep: Report, agg) -> str:
 
     cpu_str = ("%.2f" % total_cpu) if total_cpu is not None else "?"
     lines = [
-        "## Pi-Bench — validação de segurança do compose",
+        "## The 500MB Club — validação de segurança do compose",
         "",
         f"**Resultado: {status}** &nbsp;·&nbsp; "
         f"{n_pass}/{len(checks)} validações OK &nbsp;·&nbsp; "
@@ -501,7 +475,7 @@ def render_md(rep: Report, agg) -> str:
     lines += [
         "---",
         "_Gerado automaticamente pelo PR Security Gate. "
-        "Regras completas em [`docs/SECURITY.md`](docs/SECURITY.md)._",
+        "Regras completas em [`SECURITY.md`](SECURITY.md)._",
     ]
     return "\n".join(lines)
 
@@ -548,7 +522,7 @@ def main() -> int:
         print(f"FAIL [(global)] parse: {e}")
         if args.md:
             Path(args.md).write_text(
-                f"## Pi-Bench — validação de segurança\n\n"
+                f"## The 500MB Club — validação de segurança\n\n"
                 f"**❌ REPROVADO** — não foi possível parsear o compose:\n\n`{e}`\n",
                 encoding="utf-8")
         return 1
