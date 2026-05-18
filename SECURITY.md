@@ -38,7 +38,7 @@ O validador (`scripts/validate_compose.py`) reprova o PR se qualquer serviço do
 | `read_only` ausente/`false` em serviço de API | Rootfs gravável: persistência de payload. |
 | `cap_drop` sem `ALL` em serviço de API | Mantém capabilities desnecessárias. |
 | `no-new-privileges` ausente em serviço de API | Permite escalada via binário setuid. |
-| `user` root/vazio em serviço de API | Código não-confiável rodando como UID 0. |
+| `user` explicitamente `root`/`0` em serviço de API (override no compose) | Anula a `USER` non-root da imagem. Unset não bloqueia — a auditoria da imagem confere o `Config.User` real. |
 | `entrypoint:`/`command:` com shell + download | `sh -c "wget … \| sh"` = baixar segundo estágio. |
 | `mem_limit` ausente em qualquer serviço | Serviço sem teto de memória. |
 | CPU agregada > 2.0 ou memória agregada > 500 MiB | Viola a regra fundamental do desafio. |
@@ -77,7 +77,7 @@ Marcadas como `WARN` no checklist. O PR não é reprovado automaticamente, mas o
 - `memswap_limit` diferente de `mem_limit` — swap pode mascarar memory leak no benchmark.
 - Token de rede (`wget`/`curl`) em entrypoint sem o padrão completo shell+download — pode ser legítimo (healthcheck), revisar.
 - `cpus` ausente em algum serviço — impede somar o orçamento agregado com confiança.
-- Imagem desenhada para rodar como root — o compose endurecido força non-root, mas é sinal amarelo.
+- `user:` não declarado no compose de uma API — ressalva no validador; a auditoria da imagem (`audit_image.sh`) decide com base no `Config.User` real da imagem construída (essa, sim, é a regra bloqueante).
 - Build com download de rede nas camadas (visto em `docker history`) — conferir contra o repositório open source.
 - Manifesto não declara `arm64` explicitamente — pode ser imagem **single-arch** empurrada sem índice OCI (arquitetura fica só no `config` blob). Não bloqueia o PR, mas o revisor deve confirmar no `docker inspect` que a imagem é de fato arm64 nativa antes do merge.
 
@@ -87,7 +87,7 @@ Marcadas como `WARN` no checklist. O PR não é reprovado automaticamente, mas o
 
 - **arm64 nativo** declarado no manifesto (também é regra do desafio; emulação QEMU desclassifica). Ausência da declaração explícita é **ressalva**, não fail — imagens single-arch empurradas sem índice OCI ainda podem ser arm64 nativas; o revisor confirma manualmente.
 - Imagem **pública e baixável**.
-- Imagem **não desenhada para root** (ressalva se for).
+- Imagem **construída para non-root** — `Config.User` da imagem deve apontar para um UID não-zero. Esta é a *enforcement* real do non-root: forçar `user:` no compose quebra entrypoints que dropam privilégio sozinhos (nginx, postgres), então a regra mora no nível da imagem. Imagem com `Config.User` vazio ou `root`/`0` é **fail** — adicione `USER <uid>:<gid>` no Dockerfile.
 - **ENTRYPOINT/CMD sem shell+download**.
 - **Histórico de camadas sem download de rede** (ressalva, conferir contra o repo).
 - **Tamanho razoável** — imagem gigante pode esconder payload (ressalva acima de 250 MB).

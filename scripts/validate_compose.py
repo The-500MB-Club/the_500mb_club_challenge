@@ -306,10 +306,18 @@ def check_service(name: str, svc: dict, role: str, rep: Report) -> None:
             rep.fail(name, "no-nnp",
                      "servico de API deve ter security_opt: [no-new-privileges:true]")
 
+        # A enforcement real do non-root vive no audit_image.sh (inspeciona
+        # Config.User da imagem construida). Aqui:
+        #   - override explicito pra root no compose = FAIL (anula a USER da imagem)
+        #   - user unset = WARN (depende da USER do Dockerfile; audit confirma)
         user = str(svc.get("user", "")).strip()
-        if user in ("", "0", "0:0", "root", "root:root"):
+        if user in ("0", "0:0", "root", "root:root"):
             rep.fail(name, "runs-as-root",
-                     f"servico de API nao pode rodar como root (user='{user or 'unset'}')")
+                     f"servico de API com user='{user}' anula a USER do Dockerfile")
+        elif user == "":
+            rep.warn(name, "user-unset",
+                     "user nao declarado no compose; audit_image.sh confirma "
+                     "se a imagem foi construida com USER non-root")
 
     cpus, mem = get_limits(svc)
 
@@ -398,7 +406,7 @@ CHECKS: list[tuple[str, str, set[str]]] = [
     ("hardening_nnp", "APIs com no-new-privileges",
      {"no-nnp"}),
     ("hardening_nonroot", "APIs rodando como non-root",
-     {"runs-as-root"}),
+     {"runs-as-root", "user-unset"}),
     ("mem_limit", "mem_limit definido em todos os serviços",
      {"no-mem-limit"}),
     ("cpu_budget", f"CPU agregada ≤ {CPU_CAP}",

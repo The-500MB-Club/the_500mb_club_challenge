@@ -54,13 +54,15 @@ fi
 check pass "Imagem é pública e baixável"
 
 # 2. Usuario non-root configurado na imagem.
+# Esta e a enforcement real do "non-root": forcar `user:` no compose
+# quebra entrypoints que dropam privilegio, entao a regra mora aqui.
 img_user="$(docker inspect --format '{{.Config.User}}' "$IMAGE" 2>/dev/null)"
 if [ -z "$img_user" ] || [ "$img_user" = "0" ] || [ "$img_user" = "root" ] \
    || [ "$img_user" = "0:0" ]; then
-  check warn "Imagem desenhada para non-root" \
-        "imagem declara usuário '${img_user:-<vazio>}'; o compose força non-root mas é sinal amarelo"
+  check fail "Imagem construída para non-root" \
+        "imagem declara usuário '${img_user:-<vazio>}'; adicione 'USER <uid>:<gid>' no Dockerfile"
 else
-  check pass "Imagem desenhada para non-root (${img_user})"
+  check pass "Imagem construída para non-root (${img_user})"
 fi
 
 # 3. ENTRYPOINT/CMD sem shell+download.
