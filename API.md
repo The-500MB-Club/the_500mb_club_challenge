@@ -6,11 +6,11 @@ Toda resposta, em qualquer endpoint, **deve** incluir o header `X-Instance-Id` c
 
 ## `GET /healthz`
 
-Liveness probe. A sua API deve responder com `HTTP 200` enquanto o processo estiver vivo. **Não** deve consultar o Redis — este endpoint mede apenas se o processo está de pé.
+Liveness probe. A sua API deve responder com `HTTP 200` enquanto o processo estiver vivo. **Não** deve consultar o storage — este endpoint mede apenas se o processo está de pé.
 
 ## `GET /readyz`
 
-Readiness probe. Responde `HTTP 200` quando o serviço está pronto para receber tráfego (conexão com Redis estabelecida, pool montado) e `HTTP 503` enquanto não estiver. A primeira requisição contável do benchmark é a primeira depois de `readyz` retornar `200`.
+Readiness probe. Responde `HTTP 200` quando o serviço está pronto para receber tráfego (conexão com o storage estabelecida, pool montado) e `HTTP 503` enquanto não estiver. O storage é um dos quatro engines aceitos pelo desafio: `redis`, `postgres`, `mariadb` ou `mysql` (motivo em [`SECURITY.md`](./SECURITY.md#storage-suportado-allowlist)). A primeira requisição contável do benchmark é a primeira depois de `readyz` retornar `200`.
 
 ## `GET /metrics`
 

@@ -1,0 +1,137 @@
+name: Benchmark issue gate
+
+# ---------------------------------------------------------------------------
+# Valida pedidos de benchmark abertos via issue e aplica o label
+# `benchmark-request` somente quando:
+#   1. Título == "run test" (exato).
+#   2. Existe `submissions/<issue.user.login>.json` no branch principal.
+#
+# Em falha: comenta a razão, aplica `benchmark-rejected` e fecha a issue.
+# O daemon Pi-Bench (bench-runner) só pega issues com o label
+# `benchmark-request` — ou seja, este workflow é a única origem confiável
+# desse label (barreira 2 do modelo de ameaça).
+#
+# Segurança:
+#   - Roda a partir do default branch (não há injeção do "PR" aqui).
+#   - Inputs do usuário (título, login) entram via env, não via ${{ }} em shell.
+#   - Login é re-validado por regex (^[A-Za-z0-9][A-Za-z0-9-]{0,38}$).
+#   - Token só com `issues: write` + `contents: read`.
+# ---------------------------------------------------------------------------
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: issue-benchmark-gate-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate benchmark request
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    if: github.event.issue.state == 'open'
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title }}
+      ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+      EXPECTED_TITLE: "run test"
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Ensure labels exist
+        run: |
+          set -uo pipefail
+          gh label create benchmark-request \
+            --color "0E8A16" \
+            --description "Pedido de benchmark validado, aguardando daemon" \
+            --force >/dev/null 2>&1 || true
+          gh label create benchmark-running \
+            --color "FBCA04" \
+            --description "Benchmark em execução pelo daemon Pi-Bench" \
+            --force >/dev/null 2>&1 || true
+          gh label create benchmark-done \
+            --color "5319E7" \
+            --description "Benchmark concluído com sucesso" \
+            --force >/dev/null 2>&1 || true
+          gh label create benchmark-failed \
+            --color "D93F0B" \
+            --description "Benchmark falhou durante a execução" \
+            --force >/dev/null 2>&1 || true
+          gh label create benchmark-rejected \
+            --color "B60205" \
+            --description "Pedido de benchmark rejeitado automaticamente" \
+            --force >/dev/null 2>&1 || true
+
+      - name: Skip if not a benchmark request
+        id: scope
+        run: |
+          set -uo pipefail
+          # Só processa issues cujo título tem alguma chance de ser pedido
+          # de benchmark. Sem isso, qualquer issue normal cairia no fluxo
+          # de "rejeitado" e seria fechada — ruim.
+          if [ "$ISSUE_TITLE" = "$EXPECTED_TITLE" ]; then
+            echo "in_scope=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "in_scope=0" >> "$GITHUB_OUTPUT"
+            echo "Issue fora de escopo (título: '$ISSUE_TITLE'); nada a fazer."
+          fi
+
+      - name: Valida submissão mergeada
+        id: submission
+        if: steps.scope.outputs.in_scope == '1'
+        run: |
+          set -uo pipefail
+          if ! [[ "$ISSUE_AUTHOR" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            {
+              echo 'reason<<EOF'
+              echo "Login do autor (\`$ISSUE_AUTHOR\`) não passa na validação de formato de username do GitHub."
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          path="submissions/${ISSUE_AUTHOR}.json"
+          if gh api "repos/${GH_REPO}/contents/${path}" --silent >/dev/null 2>&1; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+            echo "Submissão $path encontrada no branch principal."
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            {
+              echo 'reason<<EOF'
+              echo "Submissão \`$path\` não foi encontrada no branch principal."
+              echo ""
+              echo "Abra um PR adicionando \`$path\` e aguarde o merge antes de pedir benchmark. Veja [SUBMITTING.md](../blob/main/SUBMITTING.md)."
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Aprovado — aplica benchmark-request
+        if: steps.scope.outputs.in_scope == '1' && steps.submission.outputs.ok == '1'
+        run: |
+          set -uo pipefail
+          gh issue edit "$ISSUE_NUMBER" --add-label benchmark-request
+          gh issue comment "$ISSUE_NUMBER" --body "✅ Pedido validado e enfileirado (label \`benchmark-request\`). O daemon Pi-Bench vai pegar na próxima passada de polling."
+
+      - name: Rejeitado — comenta, marca e fecha
+        if: steps.scope.outputs.in_scope == '1' && steps.submission.outputs.ok != '1'
+        env:
+          REASON: ${{ steps.submission.outputs.reason }}
+        run: |
+          set -uo pipefail
+          {
+            echo "❌ Pedido de benchmark **rejeitado** automaticamente."
+            echo
+            echo "$REASON"
+            echo
+            echo "Corrija e abra uma nova issue."
+          } > /tmp/comment.md
+          gh issue comment "$ISSUE_NUMBER" --body-file /tmp/comment.md
+          gh issue edit "$ISSUE_NUMBER" --add-label benchmark-rejected
+          gh issue close "$ISSUE_NUMBER" --reason "not planned"

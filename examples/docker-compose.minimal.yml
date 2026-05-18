@@ -1,0 +1,54 @@
+# Exemplo MINIMO de docker-compose para uma submissao do 500MB Club.
+#
+# O gate aplica automaticamente, quando ausentes:
+#   - read_only: true (api, lb, redis - NAO em db, que precisa escrever)
+#   - cap_drop: [ALL]
+#   - security_opt: [no-new-privileges:true]
+#   - tmpfs adequado por papel (api -> /tmp, lb -> /var/cache/nginx, /var/run, /tmp)
+#   - cap_add com a allowlist do nginx no servico de load balancer
+#
+# Voce continua responsavel por:
+#   - mem_limit / cpus em todos os servicos (teto agregado: 2 CPU / 500 MiB)
+#   - user non-root nos servicos de API (a imagem precisa suportar)
+#   - bind mounts read-only e fora de paths sensiveis (caso use)
+#   - ter >=3 APIs + 1 LB + 1 Storage
+#
+# Storage permitido (allowlist do desafio): redis, postgres, mariadb, mysql.
+# Sao os 4 engines que cabem no orcamento de 500 MiB - outros bancos
+# (mongo, cassandra, elastic, clickhouse, cockroach, etc.) pedem 512 MiB-1 GiB
+# so de heap e estouram o teto sozinhos. Detalhes em SECURITY.md.
+#
+# Valores explicitos seus PREVALECEM sobre o hardening - mas se forem
+# inseguros (ex: read_only: false numa API), o validador reprova.
+
+services:
+  api-1: &api
+    image: ghcr.io/seu-user/sua-api:tag
+    user: "10001:10001"
+    mem_limit: 120m
+    cpus: 0.5
+    networks: [backend]
+    depends_on: [storage]
+
+  api-2: *api
+  api-3: *api
+
+  lb:
+    image: nginx:1.27-alpine
+    ports: ["8080:80"]
+    mem_limit: 40m
+    cpus: 0.2
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks: [backend]
+    depends_on: [api-1, api-2, api-3]
+
+  storage:
+    image: redis:7-alpine
+    mem_limit: 60m
+    cpus: 0.2
+    networks: [backend]
+
+networks:
+  backend:
+    internal: true

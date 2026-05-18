@@ -19,7 +19,7 @@ flowchart LR
             A3["api-3 :8000"]
         end
 
-        R[("Storage")]
+        R[("Storage<br/>redis | postgres<br/>mariadb | mysql")]
     end
 
     Dev --> LB
@@ -62,6 +62,7 @@ Este repositório contém **apenas a infraestrutura compartilhada**: 2 scripts d
 - O ambiente de execução é docker-compose com limites estritos de CPU e memória.
   - O teto agregado de 2 CPUs e 500 MB é inviolável.
 - Não é permitido o uso de modo privilegiado.
+- **Storage permitido**: `redis`, `postgres`, `mariadb` ou `mysql`. São os quatro engines que cabem de forma realista no orçamento de 500 MiB — outros bancos (Mongo, Cassandra, Elastic, ClickHouse, Cockroach, etc.) pedem 512 MiB–1 GiB só de heap e estouram o teto sozinhos. O motivo detalhado e o perfil de hardening de cada engine estão em [`SECURITY.md`](./SECURITY.md#storage-suportado-allowlist).
 
 ## O que cada submissão precisa entregar
 

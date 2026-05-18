@@ -16,7 +16,7 @@ paths:
   /healthz:
     get:
       summary: Liveness probe
-      description: Retorna 200 enquanto o processo estiver vivo. Nao consulta Redis.
+      description: Retorna 200 enquanto o processo estiver vivo. Nao consulta o storage.
       responses:
         '200':
           description: alive
@@ -24,7 +24,10 @@ paths:
   /readyz:
     get:
       summary: Readiness probe
-      description: 200 quando o servico esta pronto para receber trafego (Redis OK, pool montado).
+      description: |
+        200 quando o servico esta pronto para receber trafego (storage OK,
+        pool montado). Storage aceito pelo desafio: redis, postgres, mariadb
+        ou mysql (ver SECURITY.md).
       responses:
         '200': { description: ready }
         '503': { description: not ready }

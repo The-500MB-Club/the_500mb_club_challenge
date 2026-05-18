@@ -8,10 +8,19 @@ No seu repositório (público, no GitHub, com licença OSI-aprovada):
 
 - A branch `main` deve conter a implementação da API.
 - Crie uma branch chamada exatamente **`implementation`**. É nela que o validador vai procurar o código.
-- A branch `implementation` deve conter, na raiz, o seu **`docker-compose.yml`** completo, atendendo todas as regras de [`SECURITY.md`](./SECURITY.md) e o orçamento de **2 CPUs / 500 MB** agregados.
+- A branch `implementation` deve conter, na raiz, o seu **`docker-compose.yml`** atendendo o orçamento de **2 CPUs / 500 MB** agregados.
   - Também deve conter o arquivo `me.json` com as informações da equipe (veja [README.md](./README.md)).
 - A imagem Docker da sua API deve ser **pública**, com manifesto **`arm64` nativo** (sem emulação QEMU).
 - O `docker-compose.yml` deve subir a stack mínima: ≥3 réplicas da API, 1 load balancer round-robin, 1 storage.
+  - **Storage permitido (allowlist)**: `redis`, `postgres`, `mariadb` ou `mysql`. São os únicos engines que cabem de forma realista nos 500 MiB agregados — outros bancos (Mongo, Cassandra, Elastic, ClickHouse, etc.) pedem 512 MiB–1 GiB só de heap e estouram o teto sozinhos. Detalhes do perfil de hardening por engine em [`SECURITY.md`](./SECURITY.md#storage-suportado-allowlist).
+
+> **O gate injeta hardening padrão pra você.** Não precisa escrever
+> `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`,
+> nem o `tmpfs` certo por papel — o gate detecta o papel pela imagem e
+> adiciona o que estiver ausente. Você fica só com o que importa: imagem,
+> comando, rede, `mem_limit`/`cpus`, `user` non-root nas APIs e bind mounts
+> (se houver). Valores explicitos seus prevalecem; se forem inseguros, o
+> validador reprova. Veja [`examples/docker-compose.minimal.yml`](./examples/docker-compose.minimal.yml).
 
 ### Arquivo `me.json` na branch `implementation`
 
@@ -62,10 +71,11 @@ Ao abrir ou atualizar o PR, o gate roda automaticamente e posta **um comentário
 1. **PR altera exatamente um arquivo** e ele é `submissions/<username>.json`.
 2. **`<username>` é o dono do repositório** em `repo_url` (você não pode submeter o repo de outra pessoa).
 3. **A branch `implementation` existe** no seu repositório.
-4. O validador **clona apenas a branch `implementation`** (raso, sem executar nada) e roda sobre o `docker-compose.yml`:
+4. O validador **clona apenas a branch `implementation`** (raso, sem executar nada), expande o compose via `docker compose config`, **injeta o hardening padrão por papel** (`scripts/harden_compose.py`) e então roda `scripts/validate_compose.py` sobre o resultado:
    - todas as regras de segurança de [`SECURITY.md`](./SECURITY.md);
    - o orçamento agregado de 2 CPUs / 500 MB;
-   - a composição mínima (≥3 APIs, LB, Storage).
+   - a composição mínima (≥3 APIs, LB, 1 Storage entre `redis`/`postgres`/`mariadb`/`mysql`).
+   - O comentário do PR lista, por serviço, o que foi auto-injetado.
 5. **`me.json` na raiz**: presente, JSON válido e com `collaborators` (array não-vazio de `{name, social_links}`) e `stack` (array não-vazio de strings).
 6. **Auditoria da imagem**: pública, `arm64` nativo, sem `ENTRYPOINT` shell+download, sem download de rede nas camadas de build.
 

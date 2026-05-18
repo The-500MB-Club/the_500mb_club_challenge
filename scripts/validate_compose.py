@@ -21,6 +21,14 @@ Uso:
 Limites do desafio (teto agregado da stack):
   CPU total <= 2.0
   Memoria total <= 500 MiB
+
+Storage suportado (allowlist do desafio): redis, postgres, mariadb, mysql.
+Sao os unicos engines que rodam de forma realista no orcamento de 500 MiB
+(redis: K/V em memoria; postgres/mariadb/mysql: SQL com tuning agressivo).
+Outros bancos (mongo, cassandra, elastic, clickhouse, cockroach, scylla,
+neo4j, influxdb 2.x, opensearch) pedem >=512 MiB de heap sozinhos e nao
+foram desenhados pra caber - submissoes que os usem caem no perfil `api`,
+recebem hardening estrito (read_only=true, non-root) e tendem a reprovar.
 """
 
 from __future__ import annotations
@@ -47,6 +55,10 @@ LB_CAP_ALLOWLIST = {"CHOWN", "SETUID", "SETGID", "NET_BIND_SERVICE", "DAC_OVERRI
 
 SHELL_TOKENS = ("sh", "bash", "ash", "/bin/sh", "/bin/bash")
 DOWNLOAD_TOKENS = ("wget", "curl", "ftp", "tftp", "nc", "ncat", "eval")
+
+# Storage allowlist (alinhado com harden_compose.py). Bancos SQL aceitos
+# como storage; redis tem perfil proprio por ser K/V em memoria.
+DB_IMAGE_TOKENS = ("postgres", "postgresql", "mariadb", "mysql")
 
 
 @dataclass
@@ -159,13 +171,18 @@ def normalize_volumes(svc: dict) -> list[dict]:
 
 
 def classify_role(name: str, svc: dict) -> str:
-    """api (codigo nao-confiavel, hardening estrito) | lb | redis | unknown."""
+    """api (codigo nao-confiavel, hardening estrito) | lb | redis | db | unknown.
+
+    `redis` e `db` (postgres/mariadb/mysql) compoem o conjunto de storage
+    suportado pelo desafio. Outras imagens de banco caem em `api` e tendem
+    a falhar a validacao pelo hardening estrito que e aplicado la.
+    """
     image = str(svc.get("image", "")).lower()
     if "redis" in image:
         return "redis"
+    if any(p in image for p in DB_IMAGE_TOKENS):
+        return "db"
     if any(p in image for p in ("nginx", "haproxy", "caddy", "traefik", "envoy")):
-        if svc.get("ports"):
-            return "lb"
         return "lb"
     if svc.get("build") or image:
         return "api"
@@ -338,9 +355,11 @@ def check_aggregate(services: dict, rep: Report) -> None:
                  f"desafio exige >=3 instancias de API; encontradas {roles.count('api')}")
     if roles.count("lb") < 1:
         rep.fail("(global)", "no-lb", "nenhum load balancer identificado")
-    if roles.count("redis") < 1:
-        rep.warn("(global)", "no-redis",
-                 "nenhum servico Redis identificado (esperado pelo contrato)")
+    storage_count = roles.count("redis") + roles.count("db")
+    if storage_count < 1:
+        rep.warn("(global)", "no-storage",
+                 "nenhum servico de storage identificado "
+                 "(esperado: redis, postgres, mariadb ou mysql)")
 
     return total_cpu if cpu_known else None, total_mem
 
@@ -386,8 +405,9 @@ CHECKS: list[tuple[str, str, set[str]]] = [
      {"cpu-budget"}),
     ("mem_budget", f"Memória agregada ≤ {MEM_CAP_BYTES//1024//1024} MiB",
      {"mem-budget"}),
-    ("min_topology", "Composição mínima (≥3 APIs, 1 LB, 1 Redis)",
-     {"min-api-replicas", "no-lb", "no-redis"}),
+    ("min_topology",
+     "Composição mínima (≥3 APIs, 1 LB, 1 Storage: redis|postgres|mariadb|mysql)",
+     {"min-api-replicas", "no-lb", "no-storage"}),
     ("compose_parse", "docker-compose parseável e bem-formado",
      {"parse"}),
 ]

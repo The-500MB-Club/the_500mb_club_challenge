@@ -177,7 +177,10 @@ jobs:
           fi
           echo >> /tmp/report.md
 
-      # 9. Valida o compose do clone (validate_compose.py).
+      # 9. Resolve (compose config) -> injeta hardening padrao -> valida.
+      #    O injetor adiciona read_only/cap_drop/no-new-privileges/tmpfs
+      #    apenas onde o participante NÃO declarou nada. Valores explícitos
+      #    são preservados (e o validador reprova se forem inseguros).
       - name: Valida compose
         id: static
         if: steps.discover.outputs.files != ''
@@ -189,19 +192,39 @@ jobs:
           overall=0
           for f in ${{ steps.discover.outputs.files }}; do
             echo "::group::$f"
-            expanded="/tmp/expanded-$(basename "$f").yml"
-            if docker compose -f "$f" config > "$expanded" 2>/tmp/cfgerr; then
-              src="$expanded"
+            resolved="/tmp/resolved-$(basename "$f").yml"
+            hardened="/tmp/hardened-$(basename "$f").yml"
+            harden_md="/tmp/harden-$(basename "$f").md"
+
+            if docker compose -f "$f" config > "$resolved" 2>/tmp/cfgerr; then
+              src="$resolved"
             else
-              echo "compose config falhou; validando bruto:"; cat /tmp/cfgerr
+              echo "compose config falhou; injetando/validando sobre bruto:"
+              cat /tmp/cfgerr
               src="$f"
             fi
+
+            if python3 "$GITHUB_WORKSPACE/base/scripts/harden_compose.py" \
+                 --in "$src" --out "$hardened" --md "$harden_md"; then
+              to_validate="$hardened"
+            else
+              echo "harden_compose falhou; validando sem injeção"
+              to_validate="$src"
+              : > "$harden_md"
+            fi
+
             md="/tmp/md-$(basename "$f").md"
             if python3 "$GITHUB_WORKSPACE/base/scripts/validate_compose.py" \
-                 --compose "$src" --raw "$f" --md "$md"; then :; else overall=1; fi
+                 --compose "$to_validate" --raw "$f" --md "$md"; then :
+            else overall=1; fi
+
             echo "<!-- compose: $f -->" >> /tmp/report.md
             cat "$md" >> /tmp/report.md
             echo >> /tmp/report.md
+            if [ -s "$harden_md" ]; then
+              cat "$harden_md" >> /tmp/report.md
+              echo >> /tmp/report.md
+            fi
             echo "::endgroup::"
           done
           echo "result=$overall" >> "$GITHUB_OUTPUT"
@@ -216,7 +239,7 @@ jobs:
           if [ -z "$ref" ]; then
             cd /tmp/impl
             ref=$(grep -hoE 'image:[[:space:]]*[^[:space:]]+' docker-compose*.y*ml 2>/dev/null \
-                  | grep -viE 'nginx|redis|haproxy|caddy|traefik|envoy|placeholder' \
+                  | grep -viE 'nginx|redis|postgres|postgresql|mariadb|mysql|haproxy|caddy|traefik|envoy|placeholder' \
                   | head -1 | awk '{print $2}' | sed 's/["'\'']//g' || true)
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"

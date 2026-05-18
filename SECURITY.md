@@ -6,10 +6,11 @@ Cada submissão entrega **o `docker-compose.yml` completo** mais a imagem Docker
 
 Isso muda tudo em relação a um cenário onde o organizador fornece o compose: aqui o compose é uma superfície de ataque de primeira classe. Um participante mal-intencionado (ou um PR comprometido) pode tentar usar o compose para ler/apagar arquivos do host, escapar do container ou derrubar o Pi.
 
-A defesa tem duas camadas:
+A defesa tem três camadas:
 
-1. **Gate automático no PR** (`.github/workflows/pr-security.yml`) — toda abertura ou sincronização de PR roda `scripts/validate_compose.py` + `scripts/audit_image.sh`. O resultado é postado como um comentário único com checklist, e qualquer violação bloqueante **reprova o PR e impede o merge**. Esta é a defesa primária e é obrigatória.
-2. **Revisão humana** — o checklist do gate orienta o revisor, mas decisões de ressalva (`WARN`) e qualquer coisa que o validador marque para inspeção exigem olho humano antes do merge e antes de rodar no Pi.
+1. **Hardening padrão injetado** (`scripts/harden_compose.py`) — após `docker compose config`, o gate injeta `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` e `tmpfs` adequado por papel **somente onde o participante não declarou nada**. Reduz a chance de submissão insegura por omissão sem mudar o que o participante escreveu de propósito.
+2. **Gate automático no PR** (`.github/workflows/pr-security.yml`) — toda abertura ou sincronização de PR roda `scripts/validate_compose.py` + `scripts/audit_image.sh` sobre o resultado da injeção. Qualquer violação bloqueante **reprova o PR e impede o merge**. Defesa primária e obrigatória — vale tanto contra omissão quanto contra valor explícito inseguro (o injetor não sobrescreve nada explícito).
+3. **Revisão humana** — o checklist do gate orienta o revisor, mas decisões de ressalva (`WARN`) e qualquer coisa que o validador marque para inspeção exigem olho humano antes do merge e antes de rodar no Pi.
 
 Nenhuma das duas camadas executa o código da submissão durante a validação. O gate só faz parsing de YAML e `docker pull/inspect/history` — que não rodam a imagem.
 
@@ -46,6 +47,27 @@ O validador (`scripts/validate_compose.py`) reprova o PR se qualquer serviço do
 Bind mounts são permitidos desde que (i) não toquem paths sensíveis do host listados acima, (ii) não contenham `..` (path traversal) e (iii) sejam declarados **read-only**. O caso canônico é o `nginx.conf` do load balancer montado read-only a partir do repositório. Qualquer bind mount que falhe em qualquer uma das três condições reprova.
 
 Capabilities têm tratamento por papel: serviços de API não podem ter **nenhuma** capability adicionada; o load balancer pode ter apenas o conjunto mínimo que o nginx exige no boot (`CHOWN`, `SETUID`, `SETGID`, `NET_BIND_SERVICE`, `DAC_OVERRIDE`). O validador classifica o papel pela imagem, não pelo nome do serviço — renomear `api-1` para `web` não burla a regra.
+
+### Storage suportado (allowlist)
+
+O desafio aceita **somente quatro engines** como serviço de storage:
+
+| Engine | Papel detectado | Hardening injetado | Por quê só esses |
+| --- | --- | --- | --- |
+| `redis` | `redis` | `read_only=true`, `cap_drop=[ALL]`, `no-new-privileges` | K/V em memória, ~30 MiB ocioso, ~80 MiB sob carga. Cabe folgado nos 500 MiB agregados. |
+| `postgres` (e `postgresql`) | `db` | `cap_drop=[ALL]`, `no-new-privileges` | SQL maduro; com `shared_buffers=16MB` e `max_connections=20` roda em ~80–150 MiB. |
+| `mariadb` | `db` | `cap_drop=[ALL]`, `no-new-privileges` | SQL maduro; com `innodb_buffer_pool_size=32M` roda em ~150–200 MiB. |
+| `mysql` | `db` | `cap_drop=[ALL]`, `no-new-privileges` | Mesmo perfil do MariaDB, com mais agressividade no tuning. |
+
+**Por que a allowlist é fechada.** O orçamento agregado de 500 MiB obriga a stack inteira (API ×3 + LB + storage) a caber em meio gigabyte. Subtraindo ~120 MiB×3 para as APIs e ~40 MiB para o LB, sobram ~100 MiB para o banco — orçamento que apenas estes quatro engines respeitam de forma realista. Bancos como **MongoDB, Cassandra, ScyllaDB, Elasticsearch, OpenSearch, ClickHouse, CockroachDB, InfluxDB 2.x, Neo4j** pedem 512 MiB–1 GiB **só de heap**: estouram o teto sozinhos, fazem OOM no Pi e desvirtuam a comparação entre runtimes.
+
+**O perfil `db` não força `read_only=true`** porque Postgres/MariaDB/MySQL precisam escrever em `/var/lib/<engine>/data` (volume), em `/var/run/<engine>` (socket) e em `/tmp`. Forçar rootfs imutável quebraria o boot do engine. É responsabilidade do participante:
+
+- Montar volume nomeado em `/var/lib/postgresql/data` (ou equivalente);
+- Usar imagem oficial — o usuário não-root padrão (`postgres`/`mysql`) é suficiente, não precisa override de `user:`;
+- Definir `mem_limit` cabível na fatia que sobra.
+
+**Como o validador trata uma imagem fora da allowlist.** Se o `image:` não contém nenhum dos tokens `redis`, `postgres`, `postgresql`, `mariadb`, `mysql` nem um LB conhecido, o serviço cai no papel `api` — e leva o pacote completo de hardening estrito (`read_only: true`, `cap_drop: [ALL]`, non-root, etc.). Como nenhum banco de verdade roda com rootfs imutável e UID arbitrário, isso reprova na prática. A topologia mínima também checa `≥1 storage` entre os quatro engines aceitos (`WARN` se ausente).
 
 ## 2. Ressalvas (não bloqueiam, exigem revisão humana)
 
