@@ -107,7 +107,7 @@ jobs:
               echo 'reason<<EOF'
               echo "Submissão \`$path\` não foi encontrada no branch principal."
               echo ""
-              echo "Abra um PR adicionando \`$path\` e aguarde o merge antes de pedir benchmark. Veja [SUBMITTING.md](../blob/main/SUBMITTING.md)."
+              echo "Abra um PR adicionando \`$path\` e aguarde o merge antes de pedir benchmark. Veja [SUBMITTING.md](../blob/master/SUBMITTING.md)."
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
           fi
