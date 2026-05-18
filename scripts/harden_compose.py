@@ -30,17 +30,22 @@ Nao tocamos em: mem_limit, cpus, user, image, command, networks, volumes
 
 Uso:
   harden_compose.py --in resolved.yml --out expanded.yml
-                    [--md report.md] [--quiet]
+                    [--md report.md] [--injected-out injected.json] [--quiet]
 
 Saida:
   expanded.yml com o compose endurecido (pronto pra validar/rodar)
   report.md (opcional) lista o que foi injetado por servico.
+  injected.json (opcional) lista os campos injetados em formato estavel;
+    o validate_compose.py consome esse JSON pra emitir WARNs nos checks
+    de hardening correspondentes, alertando o participante de que o
+    compose dele dependia da injecao do gate.
   exit 0 sempre que o YAML foi parseavel; 2 erro de uso/parse.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -86,9 +91,14 @@ def has_nnp(security_opt: list) -> bool:
                for x in security_opt)
 
 
-def inject(svc: dict, role: str) -> list[str]:
-    """Injeta hardening adequado ao papel; retorna lista de campos tocados."""
-    touched: list[str] = []
+def inject(svc: dict, role: str) -> list[tuple[str, str]]:
+    """Injeta hardening adequado ao papel; retorna [(field_id, display)].
+
+    `field_id` e estavel e serve para o validate_compose.py emitir WARNs
+    sob os checks de hardening correspondentes. `display` e o texto
+    legivel usado no relatorio Markdown e no log.
+    """
+    touched: list[tuple[str, str]] = []
 
     if role not in ("api", "lb", "redis", "db"):
         return touched
@@ -99,37 +109,37 @@ def inject(svc: dict, role: str) -> list[str]:
     # false, mantemos e o validate_compose.py reprova).
     if role != "db" and "read_only" not in svc:
         svc["read_only"] = True
-        touched.append("read_only=true")
+        touched.append(("read_only", "read_only=true"))
 
     # cap_drop: adiciona ALL apenas se nada foi declarado. Se o
     # participante declarou cap_drop sem ALL, o validador reprova.
     if "cap_drop" not in svc:
         svc["cap_drop"] = ["ALL"]
-        touched.append("cap_drop=[ALL]")
+        touched.append(("cap_drop", "cap_drop=[ALL]"))
 
     # security_opt: garante no-new-privileges. Lista e aditiva.
     sec = ensure_list(svc, "security_opt")
     if not has_nnp(sec):
         sec.append(NNP)
-        touched.append(f"security_opt+={NNP}")
+        touched.append(("no-new-privileges", f"security_opt+={NNP}"))
 
     if role == "api":
         tmpfs = ensure_list(svc, "tmpfs")
         if "/tmp" not in tmpfs:
             tmpfs.append("/tmp")
-            touched.append("tmpfs+=/tmp")
+            touched.append(("tmpfs", "tmpfs+=/tmp"))
 
     elif role == "lb":
         # cap_add somente se o participante nao mexeu - nao "completamos"
         # uma lista parcial pra evitar surpresa.
         if "cap_add" not in svc:
             svc["cap_add"] = list(LB_CAP_ALLOWLIST)
-            touched.append(f"cap_add={LB_CAP_ALLOWLIST}")
+            touched.append(("cap_add", f"cap_add={LB_CAP_ALLOWLIST}"))
         tmpfs = ensure_list(svc, "tmpfs")
         for path in ("/var/cache/nginx", "/var/run", "/tmp"):
             if path not in tmpfs:
                 tmpfs.append(path)
-                touched.append(f"tmpfs+={path}")
+                touched.append(("tmpfs", f"tmpfs+={path}"))
 
     return touched
 
@@ -141,6 +151,9 @@ def main() -> int:
     ap.add_argument("--out", dest="dst", required=True,
                     help="compose endurecido a escrever")
     ap.add_argument("--md", help="caminho opcional para relatorio Markdown")
+    ap.add_argument("--injected-out", dest="injected_out",
+                    help="caminho opcional para JSON com campos injetados "
+                         "por servico (consumido pelo validate_compose.py)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -156,7 +169,7 @@ def main() -> int:
         return 2
 
     services = data.get("services") or {}
-    report: dict[str, tuple[str, list[str]]] = {}
+    report: dict[str, tuple[str, list[tuple[str, str]]]] = {}
 
     for name, svc in services.items():
         if not isinstance(svc, dict):
@@ -170,7 +183,7 @@ def main() -> int:
 
     if not args.quiet:
         for name, (role, touched) in report.items():
-            tag = ", ".join(touched) if touched else "nada a injetar"
+            tag = ", ".join(d for _, d in touched) if touched else "nada a injetar"
             print(f"[{role:>7}] {name}: {tag}")
 
     if args.md:
@@ -186,11 +199,21 @@ def main() -> int:
             if not touched:
                 continue
             any_touched = True
-            lines.append(f"- `{name}` ({role}): {', '.join(touched)}")
+            display = ", ".join(d for _, d in touched)
+            lines.append(f"- `{name}` ({role}): {display}")
         if not any_touched:
             lines.append("- Nada injetado (compose ja vinha com tudo).")
         lines.append("")
         Path(args.md).write_text("\n".join(lines), encoding="utf-8")
+
+    if args.injected_out:
+        payload = {
+            name: {"role": role, "fields": [fid for fid, _ in touched]}
+            for name, (role, touched) in report.items()
+            if touched
+        }
+        Path(args.injected_out).write_text(
+            json.dumps(payload, indent=2), encoding="utf-8")
 
     return 0
 

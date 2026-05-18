@@ -400,11 +400,11 @@ CHECKS: list[tuple[str, str, set[str]]] = [
     ("no_shell_dl", "Entrypoint/command sem shell + download",
      {"shell-download"}),
     ("hardening_ro", "APIs com read_only rootfs",
-     {"no-read-only"}),
+     {"no-read-only", "ro-injected"}),
     ("hardening_capdrop", "APIs com cap_drop: [ALL]",
-     {"no-cap-drop-all"}),
+     {"no-cap-drop-all", "cap-drop-injected"}),
     ("hardening_nnp", "APIs com no-new-privileges",
-     {"no-nnp"}),
+     {"no-nnp", "nnp-injected"}),
     ("hardening_nonroot", "APIs rodando como non-root",
      {"runs-as-root", "user-unset"}),
     ("mem_limit", "mem_limit definido em todos os serviços",
@@ -423,6 +423,15 @@ CHECKS: list[tuple[str, str, set[str]]] = [
 # Regras que sao apenas WARN (nao bloqueiam, mas aparecem como ressalva).
 WARN_ONLY_RULES = {
     "download-token", "extra_hosts", "memswap-mismatch", "no-cpu-limit",
+}
+
+# field_id (do harden_compose --injected-out) -> rule_id (entra nos CHECKS).
+# Campos injetados que nao estao aqui (tmpfs, cap_add) nao viram WARN
+# porque sao instrumentais ao hardening, nao o hardening em si.
+INJECTED_FIELD_TO_RULE = {
+    "read_only": "ro-injected",
+    "cap_drop": "cap-drop-injected",
+    "no-new-privileges": "nnp-injected",
 }
 
 
@@ -542,6 +551,10 @@ def main() -> int:
                     help="compose a validar (idealmente saida de `compose config`)")
     ap.add_argument("--raw", help="arquivo bruto, para checagens textuais extras")
     ap.add_argument("--md", help="caminho para escrever o relatorio Markdown")
+    ap.add_argument("--injected", help="JSON produzido por harden_compose.py "
+                                       "--injected-out; emite WARN nos checks "
+                                       "de hardening pra campos que o gate teve "
+                                       "que injetar")
     args = ap.parse_args()
 
     try:
@@ -563,6 +576,27 @@ def main() -> int:
         check_service(name, svc or {}, role, rep)
 
     agg = check_aggregate(services, rep)
+
+    # WARNs por campo injetado pelo harden_compose.py. So vale pra
+    # papel `api` - os demais (lb, redis, db) tem regras frouxas no
+    # validator, entao injetar la nao e um sinal pro participante.
+    if args.injected:
+        try:
+            injected = json.loads(Path(args.injected).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"AVISO: nao li {args.injected}: {e}", file=sys.stderr)
+            injected = {}
+        for svc_name, info in injected.items():
+            if info.get("role") != "api":
+                continue
+            for field_id in info.get("fields") or []:
+                rule = INJECTED_FIELD_TO_RULE.get(field_id)
+                if not rule:
+                    continue
+                rep.warn(svc_name, rule,
+                         f"{field_id} ausente no compose; o gate injetou "
+                         f"automaticamente. Adicione no Dockerfile/compose "
+                         f"pra ter a mesma protecao rodando localmente")
 
     # checagem textual extra no arquivo bruto: docker.sock pode estar
     # escondido em formas que o parser normaliza.

@@ -195,6 +195,7 @@ jobs:
             resolved="/tmp/resolved-$(basename "$f").yml"
             hardened="/tmp/hardened-$(basename "$f").yml"
             harden_md="/tmp/harden-$(basename "$f").md"
+            injected="/tmp/injected-$(basename "$f").json"
 
             if docker compose -f "$f" config > "$resolved" 2>/tmp/cfgerr; then
               src="$resolved"
@@ -205,17 +206,21 @@ jobs:
             fi
 
             if python3 "$GITHUB_WORKSPACE/base/scripts/harden_compose.py" \
-                 --in "$src" --out "$hardened" --md "$harden_md"; then
+                 --in "$src" --out "$hardened" --md "$harden_md" \
+                 --injected-out "$injected"; then
               to_validate="$hardened"
             else
               echo "harden_compose falhou; validando sem injeção"
               to_validate="$src"
               : > "$harden_md"
+              : > "$injected"
             fi
 
             md="/tmp/md-$(basename "$f").md"
+            validate_args=(--compose "$to_validate" --raw "$f" --md "$md")
+            [ -s "$injected" ] && validate_args+=(--injected "$injected")
             if python3 "$GITHUB_WORKSPACE/base/scripts/validate_compose.py" \
-                 --compose "$to_validate" --raw "$f" --md "$md"; then :
+                 "${validate_args[@]}"; then :
             else overall=1; fi
 
             echo "<!-- compose: $f -->" >> /tmp/report.md

@@ -78,6 +78,7 @@ Marcadas como `WARN` no checklist. O PR não é reprovado automaticamente, mas o
 - Token de rede (`wget`/`curl`) em entrypoint sem o padrão completo shell+download — pode ser legítimo (healthcheck), revisar.
 - `cpus` ausente em algum serviço — impede somar o orçamento agregado com confiança.
 - `user:` não declarado no compose de uma API — ressalva no validador; a auditoria da imagem (`audit_image.sh`) decide com base no `Config.User` real da imagem construída (essa, sim, é a regra bloqueante).
+- Hardening de API injetado pelo gate (`read_only`, `cap_drop: [ALL]`, `no-new-privileges`) — uma ressalva por campo ausente. Não bloqueia, mas avisa que `docker compose up` localmente **não tem essa proteção**: o gate injeta só pra benchmark. Para emparelhar local e CI, declare explicitamente no seu compose.
 - Build com download de rede nas camadas (visto em `docker history`) — conferir contra o repositório open source.
 - Manifesto não declara `arm64` explicitamente — pode ser imagem **single-arch** empurrada sem índice OCI (arquitetura fica só no `config` blob). Não bloqueia o PR, mas o revisor deve confirmar no `docker inspect` que a imagem é de fato arm64 nativa antes do merge.
 

@@ -1,5 +1,7 @@
 # The 500MB Club Challenge - Backend language benchmark on constrained edge hardware
 
+![Raspberry Pi 5](assets/logo.png)
+
 Você vai construir um serviço de ingestão e consulta de telemetria de dispositivos (**lat/lon, bateria, aceleração nos 3 eixos**). A escolha do domínio é proposital: tem write-heavy realista, leitura por janela temporal e uma rota CPU-bound para evitar que o vencedor seja só "quem faz menos coisa".
 
 A ideia é comparar runtimes de backend em hardware de borda real (Raspberry Pi), com a stack inteira limitada a **2 CPUs e 500 MB de RAM**.
