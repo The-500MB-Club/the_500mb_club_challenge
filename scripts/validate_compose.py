@@ -16,7 +16,8 @@ Saida:
   - exit code: 0 se nenhum FAIL, 1 se houver ao menos um FAIL, 2 erro de uso
 
 Uso:
-  validate_compose.py --compose expanded.yml [--raw docker-compose.yml] [--md report.md]
+  validate_compose.py --compose expanded.yml [--raw docker-compose.yml]
+                      [--md report.md] [--project-dir DIR]
 
 Limites do desafio (teto agregado da stack):
   CPU total <= 2.0
@@ -197,9 +198,19 @@ def flatten_cmd(value) -> str:
     return str(value)
 
 
+def is_within(child: Path, parent: Path) -> bool:
+    """True se `child` esta dentro de `parent` apos resolver symlinks e `..`."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 # ----------------------------- the rules -----------------------------
 
-def check_service(name: str, svc: dict, role: str, rep: Report) -> None:
+def check_service(name: str, svc: dict, role: str, rep: Report,
+                  project_dir: Path) -> None:
     svc = svc or {}
 
     # --- tabela de rejeicao automatica (vale para QUALQUER servico) ---
@@ -277,11 +288,22 @@ def check_service(name: str, svc: dict, role: str, rep: Report) -> None:
             continue
         if vol["type"] != "bind":
             continue  # named/anon volume nao toca host FS arbitrario
-        # bind mount: bloqueia paths sensiveis/traversal e exige read-only
-        if "/" == src.strip() or src.strip().startswith(("/etc", "/var", "/root",
-                                                         "/home", "/proc", "/sys",
-                                                         "/dev", "/boot", "/usr",
-                                                         "/bin", "/lib")):
+        # bind mount: bloqueia paths sensiveis/traversal e exige read-only.
+        # Excecao: paths contidos no workspace do projeto sao seguros mesmo
+        # quando comecam com /var ou /home - caso comum em runners, onde o
+        # checkout vive em /var/lib/<runner>/work/... ou /home/runner/work/...
+        # e o `docker compose config` expande binds relativos para esse path.
+        src_str = src.strip()
+        is_sensitive_prefix = (
+            src_str == "/" or
+            src_str.startswith(("/etc", "/var", "/root", "/home", "/proc",
+                                "/sys", "/dev", "/boot", "/usr", "/bin",
+                                "/lib"))
+        )
+        in_workspace = (is_sensitive_prefix and
+                        is_within(Path(src_str), project_dir))
+
+        if is_sensitive_prefix and not in_workspace:
             rep.fail(name, "bind-host-path",
                      f"bind mount de path sensivel do host: '{src}' -> '{tgt}'")
         elif ".." in src:
@@ -555,6 +577,13 @@ def main() -> int:
                                        "--injected-out; emite WARN nos checks "
                                        "de hardening pra campos que o gate teve "
                                        "que injetar")
+    ap.add_argument("--project-dir",
+                    help="raiz do checkout do participante. Bind mounts "
+                         "contidos nesse path nao sao tratados como path "
+                         "sensivel do host (cobre o caso em que o runner "
+                         "clona o repo em /var/lib/<runner>/... ou similar). "
+                         "Default: diretorio de --raw, ou de --compose se "
+                         "--raw nao for passado.")
     args = ap.parse_args()
 
     try:
@@ -571,9 +600,16 @@ def main() -> int:
     services = data.get("services") or {}
     rep = Report()
 
+    if args.project_dir:
+        project_dir = Path(args.project_dir).resolve()
+    elif args.raw:
+        project_dir = Path(args.raw).resolve().parent
+    else:
+        project_dir = Path(args.compose).resolve().parent
+
     for name, svc in services.items():
         role = classify_role(name, svc or {})
-        check_service(name, svc or {}, role, rep)
+        check_service(name, svc or {}, role, rep, project_dir)
 
     agg = check_aggregate(services, rep)
 
