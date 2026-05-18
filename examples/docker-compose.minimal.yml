@@ -2,10 +2,10 @@
 #
 # O gate aplica automaticamente, quando ausentes:
 #   - read_only: true (api, lb, redis - NAO em db, que precisa escrever)
-#   - cap_drop: [ALL]
 #   - security_opt: [no-new-privileges:true]
 #   - tmpfs adequado por papel (api -> /tmp, lb -> /var/cache/nginx, /var/run, /tmp)
-#   - cap_add com a allowlist do nginx no servico de load balancer
+#   - cap_drop: [ALL] APENAS nas APIs (lb/redis/db usam setpriv/chown no
+#     entrypoint pra baixar privilegio - cap_drop=ALL quebra o boot deles)
 #
 # Voce continua responsavel por:
 #   - mem_limit / cpus em todos os servicos (teto agregado: 2 CPU / 500 MiB)

@@ -11,14 +11,22 @@ validador (que roda em seguida) reprova.
 Politica de injecao:
   - api:    read_only=true, cap_drop=[ALL], security_opt+= no-new-privileges,
             tmpfs+= /tmp
-  - lb:     read_only=true, cap_drop=[ALL], cap_add=allowlist (so se nenhum
-            cap_add foi declarado), security_opt+= no-new-privileges,
+  - lb:     read_only=true, security_opt+= no-new-privileges,
             tmpfs+= /var/cache/nginx,/var/run,/tmp
-  - redis:  read_only=true, cap_drop=[ALL], security_opt+= no-new-privileges
-  - db:     cap_drop=[ALL], security_opt+= no-new-privileges
+  - redis:  read_only=true, security_opt+= no-new-privileges
+  - db:     security_opt+= no-new-privileges
             (postgres/mariadb/mysql: NAO forcamos read_only porque o engine
             precisa escrever em /var/lib/<engine>/data, /var/run/<engine> e
             /tmp; participante e responsavel por configurar volume e tmpfs.)
+
+  Em lb/redis/db NAO injetamos cap_drop. As imagens oficiais desses servicos
+  iniciam como root e usam setpriv/su-exec/chown pra cair pra um usuario
+  dedicado no boot - dropar capabilities indiscriminadamente quebra esse
+  fluxo (`setresuid failed: Operation not permitted`). A defesa nesses
+  papeis fica em no-new-privileges + read_only + usuario non-root da
+  propria imagem. Se o participante quiser dropar caps manualmente
+  (declarando cap_drop/cap_add explicitamente), o validator respeita - so
+  nao injetamos nada por padrao.
 
 Storage suportado (allowlist): redis, postgres, mariadb, mysql. Qualquer
 outro banco (mongo, cassandra, elastic, etc.) nao cabe no orcamento de
@@ -55,7 +63,6 @@ except ImportError:
     print("ERRO: PyYAML nao instalado (pip install pyyaml)", file=sys.stderr)
     sys.exit(2)
 
-LB_CAP_ALLOWLIST = ["CHOWN", "SETUID", "SETGID", "NET_BIND_SERVICE", "DAC_OVERRIDE"]
 NNP = "no-new-privileges:true"
 
 # Bancos SQL aceitos como storage. Casamos pelo prefixo da tag da imagem
@@ -111,9 +118,14 @@ def inject(svc: dict, role: str) -> list[tuple[str, str]]:
         svc["read_only"] = True
         touched.append(("read_only", "read_only=true"))
 
-    # cap_drop: adiciona ALL apenas se nada foi declarado. Se o
-    # participante declarou cap_drop sem ALL, o validador reprova.
-    if "cap_drop" not in svc:
+    # cap_drop: so injetamos no perfil `api` (codigo nao-confiavel, sem
+    # entrypoint que exige caps). Em lb/redis/db as imagens oficiais
+    # iniciam como root e usam setpriv/su-exec/chown para baixar pra um
+    # usuario dedicado - cap_drop=[ALL] quebra esse boot. Defesa nesses
+    # papeis = no-new-privileges + read_only (quando aplicavel) + USER
+    # non-root da propria imagem. cap_drop declarado pelo participante
+    # e respeitado; o validator continua reprovando cap_add em API.
+    if role == "api" and "cap_drop" not in svc:
         svc["cap_drop"] = ["ALL"]
         touched.append(("cap_drop", "cap_drop=[ALL]"))
 
@@ -130,11 +142,6 @@ def inject(svc: dict, role: str) -> list[tuple[str, str]]:
             touched.append(("tmpfs", "tmpfs+=/tmp"))
 
     elif role == "lb":
-        # cap_add somente se o participante nao mexeu - nao "completamos"
-        # uma lista parcial pra evitar surpresa.
-        if "cap_add" not in svc:
-            svc["cap_add"] = list(LB_CAP_ALLOWLIST)
-            touched.append(("cap_add", f"cap_add={LB_CAP_ALLOWLIST}"))
         tmpfs = ensure_list(svc, "tmpfs")
         for path in ("/var/cache/nginx", "/var/run", "/tmp"):
             if path not in tmpfs:

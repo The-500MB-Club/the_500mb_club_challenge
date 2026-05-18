@@ -50,8 +50,11 @@ except ImportError:
 CPU_CAP = 2.0
 MEM_CAP_BYTES = 500 * 1024 * 1024          # 500 MiB
 
-# Capabilities que o nginx oficial precisa no boot (e so o LB pode ter).
-# Tudo fora disso, mesmo no LB, e bloqueado.
+# Capabilities permitidas no LB *se o participante optar por declarar*
+# cap_drop+cap_add explicitamente. O gate nao injeta cap_drop em lb/storage
+# (o setpriv/chown do boot do nginx/redis quebra com cap_drop=ALL), mas se
+# o participante quiser configurar a mao, so o conjunto minimo de boot do
+# nginx oficial e aceito. Qualquer cap fora disso reprova.
 LB_CAP_ALLOWLIST = {"CHOWN", "SETUID", "SETGID", "NET_BIND_SERVICE", "DAC_OVERRIDE"}
 
 SHELL_TOKENS = ("sh", "bash", "ash", "/bin/sh", "/bin/bash")
@@ -219,8 +222,10 @@ def check_service(name: str, svc: dict, role: str, rep: Report,
         rep.fail(name, "privileged", "privileged: true desliga o isolamento")
 
     # cap_add: PROIBIDO em servico de API (codigo nao-confiavel).
-    # No LB, o nginx oficial exige um conjunto minimo conhecido para o boot
-    # (chown/setuid/setgid dos workers + bind). Allowlist estrita so para o LB.
+    # Em lb/redis/db o gate nao injeta cap_drop (quebra setpriv/chown do
+    # boot do nginx/redis-alpine). Se o participante quiser configurar
+    # cap_drop+cap_add a mao no LB, so o conjunto minimo do nginx oficial
+    # (chown/setuid/setgid + bind) e aceito.
     cap_add = [str(c).upper() for c in (svc.get("cap_add") or [])]
     if cap_add:
         if role == "lb":

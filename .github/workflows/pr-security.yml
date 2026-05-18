@@ -178,9 +178,11 @@ jobs:
           echo >> /tmp/report.md
 
       # 9. Resolve (compose config) -> injeta hardening padrao -> valida.
-      #    O injetor adiciona read_only/cap_drop/no-new-privileges/tmpfs
-      #    apenas onde o participante NÃO declarou nada. Valores explícitos
-      #    são preservados (e o validador reprova se forem inseguros).
+      #    O injetor adiciona read_only/no-new-privileges/tmpfs por papel
+      #    onde ausentes; cap_drop=[ALL] sai apenas no perfil `api` (LB e
+      #    storage quebram com cap_drop=ALL por causa do setpriv/chown do
+      #    entrypoint oficial). Valores explícitos são preservados (e o
+      #    validador reprova se forem inseguros).
       - name: Valida compose
         id: static
         if: steps.discover.outputs.files != ''

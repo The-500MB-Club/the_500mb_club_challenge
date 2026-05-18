@@ -15,12 +15,16 @@ No seu repositório (público, no GitHub, com licença OSI-aprovada):
   - **Storage permitido (allowlist)**: `redis`, `postgres`, `mariadb` ou `mysql`. São os únicos engines que cabem de forma realista nos 500 MiB agregados — outros bancos (Mongo, Cassandra, Elastic, ClickHouse, etc.) pedem 512 MiB–1 GiB só de heap e estouram o teto sozinhos. Detalhes do perfil de hardening por engine em [`SECURITY.md`](./SECURITY.md#storage-suportado-allowlist).
 
 > **O gate injeta hardening padrão pra você.** Não precisa escrever
-> `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`,
-> nem o `tmpfs` certo por papel — o gate detecta o papel pela imagem e
-> adiciona o que estiver ausente. Você fica só com o que importa: imagem,
-> comando, rede, `mem_limit`/`cpus`, `user` non-root nas APIs e bind mounts
-> (se houver). Valores explicitos seus prevalecem; se forem inseguros, o
-> validador reprova. Veja [`examples/docker-compose.minimal.yml`](./examples/docker-compose.minimal.yml).
+> `read_only: true`, `security_opt: [no-new-privileges:true]` nem o `tmpfs`
+> certo por papel — o gate detecta o papel pela imagem e adiciona o que
+> estiver ausente. `cap_drop: [ALL]` é injetado **só nas APIs**: em LB e
+> storage (redis/postgres/mariadb/mysql) o entrypoint oficial usa
+> `setpriv`/`chown` para baixar privilégio e quebra com `cap_drop=[ALL]`,
+> então o gate deixa por sua conta — se quiser dropar, declare explícito.
+> Você fica só com o que importa: imagem, comando, rede, `mem_limit`/`cpus`,
+> `user` non-root nas APIs e bind mounts (se houver). Valores explicitos
+> seus prevalecem; se forem inseguros, o validador reprova. Veja
+> [`examples/docker-compose.minimal.yml`](./examples/docker-compose.minimal.yml).
 
 ### Arquivo `me.json` na branch `implementation`
 
