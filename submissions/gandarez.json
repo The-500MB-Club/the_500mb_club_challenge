@@ -12,6 +12,9 @@
         }, {
             "id": "java",
             "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_java"
+        }, {
+            "id": "csharp",
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_csharp"
         }
     ]
 }
