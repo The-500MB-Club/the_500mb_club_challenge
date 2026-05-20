@@ -9,6 +9,9 @@
         }, {
             "id": "rust",
             "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_rust"
+        }, {
+            "id": "java",
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_java"
         }
     ]
 }
