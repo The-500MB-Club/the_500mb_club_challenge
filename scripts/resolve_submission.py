@@ -3,7 +3,8 @@
 Pi-Bench - resolve e valida a submissao apontada por um PR.
 
 O PR NAO contem o codigo. Ele adiciona exatamente um arquivo
-`submissions/<username>.json` que aponta para um repositorio externo.
+`submissions/<username>.json` que aponta para um ou mais repositorios
+externos (cada um com um `id` proprio).
 
 Este script faz as validacoes 1 e 2 (puramente sobre o conteudo do PR e
 do JSON, SEM rede). A validacao 3 (branch `implementation` existe) e o
@@ -11,20 +12,29 @@ clone ficam no workflow, porque envolvem git/rede.
 
 Validacao 1: o PR altera EXATAMENTE um arquivo, e ele casa
              `submissions/<username>.json` (username = regra do GitHub).
-Validacao 2: o `<username>` (nome do arquivo) e o dono do repositorio
-             em `repo_url` (comparacao case-insensitive).
+Validacao 2: para cada item em `submissions[]`:
+             - `id` casa a regex (1-50 chars, [a-z0-9._-], sem comecar/
+               terminar com separador)
+             - `id` e unico dentro do arquivo
+             - `repo_url` e https://github.com/<user>/<repo> ou
+               git@github.com:<user>/<repo> e o `<user>` e o dono do
+               arquivo (`<username>.json`)
 
 Tambem valida estritamente o formato de `repo_url` ANTES de qualquer
 clone - isso barra SSRF (file://, IP interno, host != github.com).
 
 Saida:
-  --md PATH     : fragmento de checklist em Markdown
-  --meta-out P  : arquivo KEY=VALUE com USERNAME / REPO_URL / IMAGE / CLONE_OK
+  --md PATH              : fragmento de checklist em Markdown
+  --meta-out P           : arquivo KEY=VALUE com USERNAME / RESOLVE_OK /
+                           SUBMISSION_COUNT
+  --submissions-out P    : JSON com a lista de submissoes resolvidas
+                           ([{id, repo_url}, ...]); presente apenas
+                           quando RESOLVE_OK=1
   exit 0 se validacoes 1 e 2 OK; 1 caso contrario; 2 erro de uso
 
 Uso:
   resolve_submission.py --changed-files lista.txt --pr-dir pr/ \
-      --md frag.md --meta-out meta.env
+      --md frag.md --meta-out meta.env --submissions-out subs.json
 """
 
 from __future__ import annotations
@@ -41,6 +51,12 @@ SUBMISSIONS_DIR = "submissions"
 # nao comeca nem termina com hifen, sem hifen duplo.
 USERNAME_RE = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$"
+)
+
+# Regras do `id` de submissao: 1-50 chars, minusculas/digitos/`.-_`,
+# nao comeca nem termina com separador. Single-char permitido ([a-z0-9]).
+SUBMISSION_ID_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9._-]{0,48}[a-z0-9])?$"
 )
 
 # repo_url aceito: somente github.com, https ou ssh-scp. Nada de file://,
@@ -92,20 +108,23 @@ def main() -> int:
                     help="diretorio com o checkout do head do PR")
     ap.add_argument("--md", required=True)
     ap.add_argument("--meta-out", required=True)
+    ap.add_argument("--submissions-out", required=True,
+                    help="JSON com a lista resolvida de submissoes")
     args = ap.parse_args()
 
     res = Result()
     res.lines.append("### Submissão")
     res.lines.append("")
 
-    meta = {"USERNAME": "", "REPO_URL": "", "IMAGE": "", "RESOLVE_OK": "0"}
+    meta = {"USERNAME": "", "RESOLVE_OK": "0", "SUBMISSION_COUNT": "0"}
+    resolved: list[dict] = []
 
     # --- Validacao 1: exatamente um arquivo, submissions/<username>.json ---
     try:
         raw = Path(args.changed_files).read_text(encoding="utf-8")
     except OSError as e:
         res.check(False, "Lista de arquivos alterados legível", str(e))
-        _finish(res, meta, args)
+        _finish(res, meta, resolved, args)
         return 1
 
     changed = [ln.strip() for ln in raw.splitlines() if ln.strip()]
@@ -138,7 +157,7 @@ def main() -> int:
                           f"Arquivo é `{SUBMISSIONS_DIR}/{username}.json`")
 
     if username is None:
-        _finish(res, meta, args)
+        _finish(res, meta, resolved, args)
         return 1
     meta["USERNAME"] = username
 
@@ -148,53 +167,113 @@ def main() -> int:
         data = json.loads(sub_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         res.check(False, "JSON da submissão é válido", str(e))
-        _finish(res, meta, args)
+        _finish(res, meta, resolved, args)
         return 1
     res.check(True, "JSON da submissão é válido")
 
-    repo_url = data.get("repo_url")
-    if not isinstance(repo_url, str) or not repo_url.strip():
-        res.check(False, "Campo `repo_url` presente",
-                  "ausente ou não é string")
-        _finish(res, meta, args)
+    # --- Schema: objeto com chave `submissions` (array nao-vazio) ---
+    if not isinstance(data, dict):
+        res.check(False, "Schema do JSON",
+                  "raiz deve ser um objeto JSON com a chave `submissions`")
+        _finish(res, meta, resolved, args)
         return 1
-    res.check(True, "Campo `repo_url` presente")
 
-    # imagem e opcional; se vier, e usada na auditoria
-    image = data.get("image")
-    if isinstance(image, str) and image.strip():
-        meta["IMAGE"] = image.strip()
-
-    # --- Formato estrito do repo_url (barra SSRF antes de clonar) ---
-    owner, repo, canonical = normalize_repo(repo_url)
-    if owner is None:
-        res.check(False,
-                  "`repo_url` é um repositório github.com válido",
-                  f"formato recusado: '{repo_url}' "
-                  f"(só https://github.com/owner/repo ou git@github.com:owner/repo)")
-        _finish(res, meta, args)
+    subs = data.get("submissions")
+    if not isinstance(subs, list) or not subs:
+        res.check(False, "Campo `submissions` é um array não-vazio",
+                  "ausente, não é array ou está vazio")
+        _finish(res, meta, resolved, args)
         return 1
-    res.check(True, "`repo_url` é um repositório github.com válido")
-    meta["REPO_URL"] = canonical
+    res.check(True, "Campo `submissions` é um array não-vazio")
 
-    # --- Validacao 2: username (arquivo) == dono do repo ---
-    if owner.lower() != username.lower():
-        res.check(False,
-                  "`<username>` corresponde ao dono do repositório",
-                  f"arquivo é de '{username}' mas o repo pertence a '{owner}'")
-        _finish(res, meta, args)
+    # --- Valida cada submissao + unicidade de id ---
+    seen_ids: set[str] = set()
+    duplicate_ids: list[str] = []
+    invalid = False
+
+    for idx, item in enumerate(subs):
+        prefix = f"submissions[{idx}]"
+        if not isinstance(item, dict):
+            res.check(False, f"`{prefix}` é um objeto",
+                      f"esperado objeto, veio {type(item).__name__}")
+            invalid = True
+            continue
+
+        sub_id = item.get("id")
+        if not isinstance(sub_id, str) or not sub_id.strip():
+            res.check(False, f"`{prefix}.id` presente",
+                      "ausente ou não é string não-vazia")
+            invalid = True
+            continue
+        sub_id = sub_id.strip()
+
+        if not SUBMISSION_ID_RE.match(sub_id):
+            res.check(False, f"`{prefix}.id` é válido",
+                      f"'{sub_id}' não casa "
+                      "`^[a-z0-9](?:[a-z0-9._-]{0,48}[a-z0-9])?$` "
+                      "(1-50 chars, minúsculas/dígitos/`.-_`, "
+                      "não começa/termina com separador)")
+            invalid = True
+            continue
+
+        if sub_id in seen_ids:
+            duplicate_ids.append(sub_id)
+            res.check(False, f"`{prefix}.id` é único no arquivo",
+                      f"id '{sub_id}' aparece mais de uma vez")
+            invalid = True
+            # continue checando o resto pra reportar tudo de uma vez
+
+        seen_ids.add(sub_id)
+
+        repo_url = item.get("repo_url")
+        if not isinstance(repo_url, str) or not repo_url.strip():
+            res.check(False, f"`{prefix}.repo_url` presente",
+                      "ausente ou não é string")
+            invalid = True
+            continue
+
+        owner, _repo, canonical = normalize_repo(repo_url)
+        if owner is None:
+            res.check(False,
+                      f"`{prefix}.repo_url` é um repositório github.com válido",
+                      f"formato recusado: '{repo_url}' "
+                      "(só https://github.com/owner/repo "
+                      "ou git@github.com:owner/repo)")
+            invalid = True
+            continue
+
+        if owner.lower() != username.lower():
+            res.check(False,
+                      f"`{prefix}` pertence ao dono do arquivo",
+                      f"arquivo é de '{username}' mas "
+                      f"`{prefix}.repo_url` pertence a '{owner}'")
+            invalid = True
+            continue
+
+        resolved.append({"id": sub_id, "repo_url": canonical})
+
+    if invalid:
+        # ao menos uma falhou; tudo ja foi reportado no loop
+        _finish(res, meta, resolved, args)
         return 1
-    res.check(True, "`<username>` corresponde ao dono do repositório")
+
+    res.check(True,
+              f"{len(resolved)} submissão(ões) válida(s): "
+              f"{', '.join(sorted(s['id'] for s in resolved))}")
 
     meta["RESOLVE_OK"] = "1"
-    _finish(res, meta, args)
+    meta["SUBMISSION_COUNT"] = str(len(resolved))
+    _finish(res, meta, resolved, args)
     return 0
 
 
-def _finish(res: Result, meta: dict, args) -> None:
+def _finish(res: Result, meta: dict, resolved: list[dict], args) -> None:
     Path(args.md).write_text("\n".join(res.lines) + "\n", encoding="utf-8")
     Path(args.meta_out).write_text(
         "".join(f"{k}={v}\n" for k, v in meta.items()), encoding="utf-8"
+    )
+    Path(args.submissions_out).write_text(
+        json.dumps(resolved, indent=2) + "\n", encoding="utf-8"
     )
     print("\n".join(res.lines))
 

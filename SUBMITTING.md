@@ -54,17 +54,28 @@ Faça um fork **deste** repositório e adicione **um único arquivo**:
 submissions/<username>.json
 ```
 
-O nome do arquivo deve ser exatamente o seu nome de usuário do GitHub. Conteúdo:
+O nome do arquivo deve ser exatamente o seu nome de usuário do GitHub. O arquivo pode listar **uma ou mais submissões** (linguagens/variantes diferentes do mesmo participante), cada uma com um `id` próprio. Exemplo:
 
 ```json
 {
-  "repo_url": "https://github.com/<username>/<repository>"
+  "submissions": [
+    {
+      "id": "go",
+      "repo_url": "https://github.com/<username>/<repository-go>"
+    },
+    {
+      "id": "python",
+      "repo_url": "https://github.com/<username>/<repository-python>"
+    }
+  ]
 }
 ```
 
 | Campo | Obrigatório | Descrição |
 | --- | --- | --- |
-| `repo_url` | sim | URL do seu repositório. Só `https://github.com/owner/repo` ou `git@github.com:owner/repo`. O `owner` **deve** ser igual ao seu usuário (o nome do arquivo). |
+| `submissions` | sim | Array não-vazio de submissões. |
+| `submissions[].id` | sim | Identificador da submissão. 1-50 chars; minúsculas/dígitos/`.`/`-`/`_`; não começa nem termina com separador. **Único por arquivo** (o mesmo `id` pode aparecer em arquivos de outros participantes — a unicidade é por usuário). Você escolhe o nome (ex: `go`, `gandarez-go`, `python`). |
+| `submissions[].repo_url` | sim | URL do seu repositório. Só `https://github.com/owner/repo` ou `git@github.com:owner/repo`. O `owner` **deve** ser igual ao seu usuário (o nome do arquivo). |
 
 O PR **só pode alterar esse um arquivo**. Qualquer outra mudança reprova automaticamente.
 
@@ -73,17 +84,18 @@ O PR **só pode alterar esse um arquivo**. Qualquer outra mudança reprova autom
 Ao abrir ou atualizar o PR, o gate roda automaticamente e posta **um comentário único** com um checklist. A ordem das validações:
 
 1. **PR altera exatamente um arquivo** e ele é `submissions/<username>.json`.
-2. **`<username>` é o dono do repositório** em `repo_url` (você não pode submeter o repo de outra pessoa).
-3. **A branch `implementation` existe** no seu repositório.
-4. O validador **clona apenas a branch `implementation`** (raso, sem executar nada), expande o compose via `docker compose config`, **injeta o hardening padrão por papel** (`scripts/harden_compose.py`) e então roda `scripts/validate_compose.py` sobre o resultado:
-   - todas as regras de segurança de [`SECURITY.md`](./SECURITY.md);
-   - o orçamento agregado de 2 CPUs / 500 MB;
-   - a composição mínima (≥3 APIs, LB, 1 Storage entre `redis`/`postgres`/`mariadb`/`mysql`).
-   - O comentário do PR lista, por serviço, o que foi auto-injetado.
-5. **`me.json` na raiz**: presente, JSON válido e com `collaborators` (array não-vazio de `{name, social_links}`) e `stack` (array não-vazio de strings).
-6. **Auditoria da imagem**: pública, `arm64` nativo, sem `ENTRYPOINT` shell+download, sem download de rede nas camadas de build.
+2. **Schema do JSON**: objeto com `submissions` (array não-vazio); cada item tem `id` (formato válido, único no arquivo) e `repo_url` cujo `owner` é o `<username>`.
+3. **Para cada submissão**, em sequência:
+   1. A branch `implementation` existe no `repo_url`.
+   2. O validador **clona apenas a branch `implementation`** (raso, sem executar nada), expande o compose via `docker compose config`, **injeta o hardening padrão por papel** (`scripts/harden_compose.py`) e então roda `scripts/validate_compose.py` sobre o resultado:
+      - todas as regras de segurança de [`SECURITY.md`](./SECURITY.md);
+      - o orçamento agregado de 2 CPUs / 500 MB;
+      - a composição mínima (≥3 APIs, LB, 1 Storage entre `redis`/`postgres`/`mariadb`/`mysql`).
+      - O comentário do PR lista, por serviço, o que foi auto-injetado.
+   3. **`me.json` na raiz**: presente, JSON válido e com `collaborators` (array não-vazio de `{name, social_links}`) e `stack` (array não-vazio de strings).
+   4. **Auditoria da imagem**: pública, `arm64` nativo, sem `ENTRYPOINT` shell+download, sem download de rede nas camadas de build.
 
-Cada item vira `- [x]` (passou) ou `- [ ]` (falhou, com o motivo logo abaixo). **Qualquer item falho bloqueia o merge.** Corrija no seu repositório, atualize o PR (qualquer push reexecuta o gate) e o mesmo comentário é atualizado.
+Cada item vira `- [x]` (passou) ou `- [ ]` (falhou, com o motivo logo abaixo). **Qualquer item falho em qualquer submissão bloqueia o merge.** Corrija no(s) seu(s) repositório(s), atualize o PR (qualquer push reexecuta o gate) e o mesmo comentário é atualizado.
 
 ## O que o pipeline NÃO faz
 
@@ -92,9 +104,11 @@ Por segurança, o gate **nunca executa o código da sua submissão** durante a v
 ## Erros comuns
 
 - **"PR altera N arquivos"** — você commitou algo além do `submissions/<username>.json`. Reabra o PR só com esse arquivo.
-- **"username não corresponde ao dono do repositório"** — o nome do arquivo difere do `owner` em `repo_url`. Eles têm que ser a mesma conta.
-- **"Branch implementation ausente"** — você não criou a branch, ou ela está só no seu fork local. Faça `git push origin implementation`.
+- **"submissions[].id é único no arquivo"** — você repetiu o mesmo `id` em duas submissões. O `id` precisa ser único por usuário (pode repetir entre usuários diferentes).
+- **"submissions[].id é válido"** — o `id` saiu do formato (1-50 chars, `[a-z0-9._-]`, sem começar/terminar com separador).
+- **"submissions[].repo_url pertence ao dono do arquivo"** — o `owner` no `repo_url` difere do nome do arquivo. Você não pode listar repo de outra pessoa em `submissions[]`.
+- **"Branch implementation ausente"** — você não criou a branch num dos repositórios, ou ela está só no seu fork local. Faça `git push origin implementation`.
 - **"repo_url formato recusado"** — use a URL canônica do GitHub. Nada de URL encurtada, IP, ou outro host.
-- **"sem arm64 no manifesto"** — sua imagem foi buildada só para amd64. Use `docker buildx` num runner arm64 nativo.
+- **"sem arm64 no manifesto"** — uma das imagens foi buildada só para amd64. Use `docker buildx` num runner arm64 nativo.
 
 Regras completas e o modelo de ameaça por trás dessas validações: [`SECURITY.md`](./SECURITY.md).

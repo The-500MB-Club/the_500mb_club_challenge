@@ -79,11 +79,24 @@ Este repositório contém **apenas a infraestrutura compartilhada**: 2 scripts d
 
 ### Arquivo `<username>.json` da pasta `submissions`
 
+Você pode listar uma ou mais submissões (linguagens/variantes diferentes), cada uma com um `id` próprio. Os `id`s precisam ser únicos dentro do seu arquivo (podem repetir entre arquivos de outros participantes).
+
 ```json
 {
-  "repo_url": "https://github.com/<username>/<repository>"
+  "submissions": [
+    {
+      "id": "go",
+      "repo_url": "https://github.com/<username>/<repository-go>"
+    },
+    {
+      "id": "python",
+      "repo_url": "https://github.com/<username>/<repository-python>"
+    }
+  ]
 }
 ```
+
+Detalhes do schema e regras de validação em [SUBMITTING.md](./SUBMITTING.md).
 
 ### Arquivo `me.json` na branch `implementation`
 

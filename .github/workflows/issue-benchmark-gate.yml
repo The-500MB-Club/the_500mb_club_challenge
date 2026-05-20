@@ -3,8 +3,9 @@ name: Benchmark issue gate
 # ---------------------------------------------------------------------------
 # Valida pedidos de benchmark abertos via issue e aplica o label
 # `benchmark-request` somente quando:
-#   1. Título == "run test" (exato).
+#   1. Título casa `test/<id>` (id no formato do schema da submissão).
 #   2. Existe `submissions/<issue.user.login>.json` no branch principal.
+#   3. O `<id>` extraído do título existe em `submissions[].id` daquele arquivo.
 #
 # Em falha: comenta a razão, aplica `benchmark-rejected` e fecha a issue.
 # O daemon Pi-Bench (bench-runner) só pega issues com o label
@@ -40,7 +41,8 @@ jobs:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       ISSUE_TITLE: ${{ github.event.issue.title }}
       ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-      EXPECTED_TITLE: "run test"
+      # Regex do titulo: `test/<id>`, id como no resolve_submission.py.
+      TITLE_RE: '^test/[a-z0-9](([a-z0-9._-]{0,48}[a-z0-9])?)$'
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -75,8 +77,10 @@ jobs:
           # Só processa issues cujo título tem alguma chance de ser pedido
           # de benchmark. Sem isso, qualquer issue normal cairia no fluxo
           # de "rejeitado" e seria fechada — ruim.
-          if [ "$ISSUE_TITLE" = "$EXPECTED_TITLE" ]; then
+          if [[ "$ISSUE_TITLE" =~ $TITLE_RE ]]; then
+            sub_id="${ISSUE_TITLE#test/}"
             echo "in_scope=1" >> "$GITHUB_OUTPUT"
+            echo "submission_id=${sub_id}" >> "$GITHUB_OUTPUT"
           else
             echo "in_scope=0" >> "$GITHUB_OUTPUT"
             echo "Issue fora de escopo (título: '$ISSUE_TITLE'); nada a fazer."
@@ -85,6 +89,8 @@ jobs:
       - name: Valida submissão mergeada
         id: submission
         if: steps.scope.outputs.in_scope == '1'
+        env:
+          SUBMISSION_ID: ${{ steps.scope.outputs.submission_id }}
         run: |
           set -uo pipefail
           if ! [[ "$ISSUE_AUTHOR" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
@@ -98,10 +104,10 @@ jobs:
           fi
 
           path="submissions/${ISSUE_AUTHOR}.json"
-          if gh api "repos/${GH_REPO}/contents/${path}" --silent >/dev/null 2>&1; then
-            echo "ok=1" >> "$GITHUB_OUTPUT"
-            echo "Submissão $path encontrada no branch principal."
-          else
+          tmp=$(mktemp)
+          if ! gh api "repos/${GH_REPO}/contents/${path}" \
+                 -H "Accept: application/vnd.github.raw+json" \
+                 > "$tmp" 2>/dev/null; then
             echo "ok=0" >> "$GITHUB_OUTPUT"
             {
               echo 'reason<<EOF'
@@ -110,14 +116,39 @@ jobs:
               echo "Abra um PR adicionando \`$path\` e aguarde o merge antes de pedir benchmark. Veja [SUBMITTING.md](../blob/master/SUBMITTING.md)."
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # O JSON ja passou pelo PR gate; aqui so confirmamos que o id
+          # informado no titulo existe na lista.
+          if ! jq -e --arg id "$SUBMISSION_ID" \
+               '.submissions | type == "array" and any(.id == $id)' \
+               "$tmp" >/dev/null 2>&1; then
+            ids=$(jq -r '[.submissions[]?.id] | join(", ")' "$tmp" 2>/dev/null || true)
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            {
+              echo 'reason<<EOF'
+              echo "Id de submissão \`$SUBMISSION_ID\` não existe em \`$path\`."
+              echo ""
+              echo "Ids disponíveis: \`${ids:-<nenhum>}\`."
+              echo ""
+              echo "Confira o título da issue (\`test/<id>\`) e o conteúdo de \`$path\` no branch principal."
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "ok=1" >> "$GITHUB_OUTPUT"
+          echo "Submissão $path encontrada e id '$SUBMISSION_ID' presente."
 
       - name: Aprovado — aplica benchmark-request
         if: steps.scope.outputs.in_scope == '1' && steps.submission.outputs.ok == '1'
+        env:
+          SUBMISSION_ID: ${{ steps.scope.outputs.submission_id }}
         run: |
           set -uo pipefail
           gh issue edit "$ISSUE_NUMBER" --add-label benchmark-request
-          gh issue comment "$ISSUE_NUMBER" --body "✅ Pedido validado e enfileirado (label \`benchmark-request\`). O daemon Pi-Bench vai pegar na próxima passada de polling."
+          gh issue comment "$ISSUE_NUMBER" --body "✅ Pedido validado (id \`${SUBMISSION_ID}\`) e enfileirado (label \`benchmark-request\`). O daemon Pi-Bench vai pegar na próxima passada de polling."
 
       - name: Rejeitado — comenta, marca e fecha
         if: steps.scope.outputs.in_scope == '1' && steps.submission.outputs.ok != '1'

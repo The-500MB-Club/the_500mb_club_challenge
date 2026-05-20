@@ -3,7 +3,7 @@
 
 import { randomIntBetween } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
 
-export const BASE = __ENV.BASE_URL || 'http://raspberrypi.local:8080';
+export const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 const DEVICE_COUNT = parseInt(__ENV.DEVICE_COUNT || '50', 10);
 
 export const JSON_HEADER = { 'Content-Type': 'application/json' };
@@ -46,7 +46,6 @@ export function tagged(op) {
 
 // Mixes nomeados. Soma == 1.0. Lidos por pickOp.
 export const MIX_STEADY    = { post: 0.60, batch: 0.10, range: 0.20, anomaly: 0.10 };
-export const MIX_ENDURANCE = { post: 0.40, batch: 0.25, range: 0.25, anomaly: 0.10 };
 
 // pickOp recebe um valor uniforme em [0,1) e o objeto mix.
 // Itera em ordem de declaracao (V8 preserva ordem para chaves string).
