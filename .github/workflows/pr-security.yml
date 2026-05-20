@@ -126,31 +126,40 @@ jobs:
           overall=1
           count=$(jq 'length' /tmp/submissions.json)
 
+          # Bloco que separa seções no relatório com UMA linha em branco
+          # antes de cada cabeçalho. Cada `cat fragmento` cuida da própria
+          # lista contígua; aqui só garantimos o respiro entre seções.
+          section() {  # section <arquivo-fragmento>
+            printf '\n' >> /tmp/report.md
+            cat "$1" >> /tmp/report.md
+          }
+
           for i in $(seq 0 $((count - 1))); do
             id=$(jq -r ".[$i].id" /tmp/submissions.json)
             url=$(jq -r ".[$i].repo_url" /tmp/submissions.json)
             sub_ok=1
+            clone_dir="/tmp/impl-$id"
+            # Buffers por seção, montados no fim em ordem e bem espaçados.
+            repo_md="/tmp/repo-$id.md"; : > "$repo_md"
+            me_md="/tmp/me-$id.md"; : > "$me_md"
+            compose_md="/tmp/compose-$id.md"; : > "$compose_md"
+            img_md="/tmp/img-$id.md"; : > "$img_md"
 
             echo "::group::submission '$id' ($url)"
-            {
-              echo "### Submissão \`$id\`"
-              echo
-              echo "Repositório: \`$url\`"
-              echo
-            } >> /tmp/report.md
 
-            # 5a. ls-remote da branch implementation
+            # 5a. Repositório: branch implementation existe? (ls-remote)
+            #     Os checks de repositório vão todos para $repo_md, formando
+            #     uma única lista contígua sob "### Repositório".
             if timeout 30 git ls-remote --heads "$url" implementation \
                  | grep -q 'refs/heads/implementation'; then
-              echo "- [x] Branch \`implementation\` existe em \`$url\`" >> /tmp/report.md
+              echo "- [x] Branch \`implementation\` existe em \`$url\`" >> "$repo_md"
             else
-              echo "- [ ] Branch \`implementation\` existe em \`$url\` — ❌" >> /tmp/report.md
-              echo "  - ❌ branch ausente ou repositório inacessível" >> /tmp/report.md
+              echo "- [ ] Branch \`implementation\` existe em \`$url\` — ❌" >> "$repo_md"
+              echo "  - ❌ branch ausente ou repositório inacessível" >> "$repo_md"
               sub_ok=0
             fi
 
             # 5b. clone raso
-            clone_dir="/tmp/impl-$id"
             if [ "$sub_ok" = "1" ]; then
               rm -rf "$clone_dir"
               if timeout 120 git -c protocol.file.allow=never \
@@ -158,33 +167,29 @@ jobs:
                    --no-tags "$url" "$clone_dir"; then
                 rm -rf "$clone_dir/.git"
               else
-                echo "- [ ] Clone da branch implementation — ❌" >> /tmp/report.md
-                echo "  - ❌ git clone falhou" >> /tmp/report.md
+                echo "- [ ] Clone da branch implementation — ❌" >> "$repo_md"
+                echo "  - ❌ git clone falhou" >> "$repo_md"
                 sub_ok=0
               fi
             fi
 
-            # 5c. me.json
+            # 5c. me.json (seção própria; o fragmento já traz seu cabeçalho).
             if [ "$sub_ok" = "1" ]; then
-              me_md="/tmp/me-$id.md"
               if python3 "$GITHUB_WORKSPACE/base/scripts/validate_me_json.py" \
                    --me-json "$clone_dir/me.json" --md "$me_md"; then :
               else sub_ok=0; fi
-              cat "$me_md" >> /tmp/report.md
-              echo >> /tmp/report.md
             fi
 
-            # 5d. discovery do compose
+            # 5d. discovery do compose (check de repositório -> $repo_md).
             files=""
             if [ "$sub_ok" = "1" ]; then
               files=$(cd "$clone_dir" && ls docker-compose*.yml docker-compose*.yaml 2>/dev/null || true)
               if [ -z "$files" ]; then
-                echo "- [ ] Repositório contém docker-compose — ❌" >> /tmp/report.md
-                echo "  - ❌ nenhum docker-compose*.yml na branch implementation" >> /tmp/report.md
+                echo "- [ ] Repositório contém docker-compose — ❌" >> "$repo_md"
+                echo "  - ❌ nenhum docker-compose*.yml na branch implementation" >> "$repo_md"
                 sub_ok=0
               else
-                echo "- [x] Repositório contém docker-compose" >> /tmp/report.md
-                echo >> /tmp/report.md
+                echo "- [x] Repositório contém docker-compose" >> "$repo_md"
               fi
             fi
 
@@ -224,13 +229,15 @@ jobs:
                      "${validate_args[@]}"; then :
                 else sub_ok=0; fi
 
-                echo "<!-- compose: $id/$f -->" >> /tmp/report.md
-                cat "$md" >> /tmp/report.md
-                echo >> /tmp/report.md
-                if [ -s "$harden_md" ]; then
-                  cat "$harden_md" >> /tmp/report.md
-                  echo >> /tmp/report.md
-                fi
+                # Acumula a seção do compose com respiro entre fragmentos.
+                {
+                  echo "<!-- compose: $id/$f -->"
+                  cat "$md"
+                  if [ -s "$harden_md" ]; then
+                    echo
+                    cat "$harden_md"
+                  fi
+                } >> "$compose_md"
                 echo "::endgroup::"
               done
             fi
@@ -244,15 +251,27 @@ jobs:
               echo "Imagem: '${ref:-<nenhuma>}'"
             fi
 
-            # 5g. auditoria da imagem
+            # 5g. auditoria da imagem (fragmento traz seu próprio cabeçalho).
             if [ "$sub_ok" = "1" ] && [ -n "$ref" ]; then
-              img_md="/tmp/img-$id.md"
               chmod +x "$GITHUB_WORKSPACE/base/scripts/audit_image.sh"
               if "$GITHUB_WORKSPACE/base/scripts/audit_image.sh" "$ref" "$img_md"; then :
               else sub_ok=0; fi
-              cat "$img_md" >> /tmp/report.md
-              echo >> /tmp/report.md
             fi
+
+            # 5h. Monta o relatório da submissão: lista de repositório
+            #     contígua logo abaixo do título, e cada seção seguinte
+            #     (me.json, compose, imagem) separada por UMA linha em branco.
+            {
+              echo "### Submissão \`$id\`"
+              echo
+              echo "Repositório: \`$url\`"
+              echo
+            } >> /tmp/report.md
+            cat "$repo_md" >> /tmp/report.md
+            [ -s "$me_md" ] && section "$me_md"
+            [ -s "$compose_md" ] && section "$compose_md"
+            [ -s "$img_md" ] && section "$img_md"
+            echo >> /tmp/report.md
 
             if [ "$sub_ok" != "1" ]; then
               overall=0
