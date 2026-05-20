@@ -23,18 +23,29 @@ Validacao 2: para cada item em `submissions[]`:
 Tambem valida estritamente o formato de `repo_url` ANTES de qualquer
 clone - isso barra SSRF (file://, IP interno, host != github.com).
 
+DIFF INCREMENTAL:
+  O formato do arquivo inteiro e SEMPRE validado (schema, ids unicos,
+  ownership - tudo local e instantaneo). Mas a lista emitida em
+  `--submissions-out` (que o workflow clona/expande/audita - a parte
+  cara e barulhenta) contem APENAS as submissoes novas ou alteradas em
+  relacao ao `--base-dir`. Submissoes inalteradas (mesmo `id` + mesmo
+  `repo_url` canonico do base) ja foram validadas no PR que as
+  introduziu; reprocessa-las so polui o comentario. Sem `--base-dir`
+  (ou base ausente/malformado), todas as submissoes sao validadas.
+
 Saida:
   --md PATH              : fragmento de checklist em Markdown
   --meta-out P           : arquivo KEY=VALUE com USERNAME / RESOLVE_OK /
-                           SUBMISSION_COUNT
-  --submissions-out P    : JSON com a lista de submissoes resolvidas
+                           SUBMISSION_COUNT (so as novas/alteradas)
+  --submissions-out P    : JSON com a lista de submissoes a (re)validar
                            ([{id, repo_url}, ...]); presente apenas
                            quando RESOLVE_OK=1
   exit 0 se validacoes 1 e 2 OK; 1 caso contrario; 2 erro de uso
 
 Uso:
   resolve_submission.py --changed-files lista.txt --pr-dir pr/ \
-      --md frag.md --meta-out meta.env --submissions-out subs.json
+      --base-dir base/ --md frag.md --meta-out meta.env \
+      --submissions-out subs.json
 """
 
 from __future__ import annotations
@@ -106,6 +117,10 @@ def main() -> int:
                     help="arquivo texto com a lista de arquivos do diff do PR")
     ap.add_argument("--pr-dir", required=True,
                     help="diretorio com o checkout do head do PR")
+    ap.add_argument("--base-dir", default=None,
+                    help="diretorio com o checkout do base ref. Usado so "
+                         "para o diff incremental: submissoes identicas ao "
+                         "base sao puladas. Ausente => valida todas.")
     ap.add_argument("--md", required=True)
     ap.add_argument("--meta-out", required=True)
     ap.add_argument("--submissions-out", required=True,
@@ -257,14 +272,71 @@ def main() -> int:
         _finish(res, meta, resolved, args)
         return 1
 
-    res.check(True,
-              f"{len(resolved)} submissão(ões) válida(s): "
-              f"{', '.join(sorted(s['id'] for s in resolved))}")
+    # --- Diff incremental: emite so as submissoes novas ou alteradas ---
+    # O arquivo inteiro ja foi validado acima (formato/unicidade/owner).
+    # Aqui filtramos o que o workflow vai realmente clonar e auditar.
+    base_map = _load_base_submissions(args.base_dir, username)
+    to_validate: list[dict] = []
+    unchanged: list[str] = []
+    for s in resolved:
+        if base_map.get(s["id"]) == s["repo_url"]:
+            unchanged.append(s["id"])
+        else:
+            to_validate.append(s)
 
+    if base_map and unchanged:
+        res.lines.append(
+            f"- [x] {len(unchanged)} submissão(ões) inalterada(s), "
+            f"pulada(s): {', '.join(sorted(unchanged))}"
+        )
+
+    if to_validate:
+        label = ("nova(s)/alterada(s) para validar"
+                 if base_map else "válida(s)")
+        res.check(True,
+                  f"{len(to_validate)} submissão(ões) {label}: "
+                  f"{', '.join(sorted(s['id'] for s in to_validate))}")
+    else:
+        res.check(True, "Nenhuma submissão nova ou alterada neste PR")
+
+    resolved = to_validate
     meta["RESOLVE_OK"] = "1"
     meta["SUBMISSION_COUNT"] = str(len(resolved))
     _finish(res, meta, resolved, args)
     return 0
+
+
+def _load_base_submissions(base_dir, username: str) -> dict[str, str]:
+    """Mapa {id: repo_url_canonico} do `<username>.json` no base ref.
+
+    Usado apenas para o diff incremental. Qualquer problema (sem
+    --base-dir, arquivo ausente, JSON malformado, item invalido) e
+    tratado como "sem base" => o PR valida tudo. NUNCA falha o PR: o
+    base ja foi validado quando entrou no master.
+    """
+    if not base_dir:
+        return {}
+    path = Path(base_dir) / SUBMISSIONS_DIR / f"{username}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    subs = data.get("submissions")
+    if not isinstance(subs, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in subs:
+        if not isinstance(item, dict):
+            continue
+        sid, url = item.get("id"), item.get("repo_url")
+        if not isinstance(sid, str) or not isinstance(url, str):
+            continue
+        _owner, _repo, canonical = normalize_repo(url)
+        if canonical is not None:
+            out[sid.strip()] = canonical
+    return out
 
 
 def _finish(res: Result, meta: dict, resolved: list[dict], args) -> None:

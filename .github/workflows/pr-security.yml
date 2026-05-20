@@ -11,8 +11,11 @@ name: PR Security Gate
 #      `{id, repo_url}`: id unico no arquivo + repo pertence ao
 #      `<username>`. Tambem barra repo_url fora de github.com
 #      (anti-SSRF) ANTES de qualquer clone. Emite `submissions.json`
-#      com a lista canonicalizada.
-#   3. Para CADA submissao, o workflow faz `git ls-remote` (branch
+#      com a lista canonicalizada - mas APENAS com as submissoes novas
+#      ou alteradas em relacao ao base ref (diff incremental). As
+#      inalteradas ja foram validadas no PR que as introduziu; pula-las
+#      evita re-clonar/re-auditar tudo e poluir o comentario.
+#   3. Para CADA submissao (nova/alterada), o workflow faz `git ls-remote` (branch
 #      `implementation`), clona, valida `me.json`, expande compose,
 #      injeta hardening, valida e auditoria de imagem.
 #   4. Tudo vira um comentario unico com checklist no PR (via workflow_run),
@@ -99,6 +102,7 @@ jobs:
           if python3 base/scripts/resolve_submission.py \
                --changed-files /tmp/changed.txt \
                --pr-dir pr \
+               --base-dir base \
                --md /tmp/frag-resolve.md \
                --meta-out /tmp/meta.env \
                --submissions-out /tmp/submissions.json; then
