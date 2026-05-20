@@ -15,6 +15,9 @@
         }, {
             "id": "csharp",
             "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_csharp"
+        }, {
+            "id": "cpp",
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_cpp"
         }
     ]
 }
