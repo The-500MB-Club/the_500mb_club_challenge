@@ -6,7 +6,7 @@
 import http from 'k6/http';
 import {
   BASE, deviceId, telemetryPayload, telemetryBatchPayload,
-  tagged, pickOp, MIX_STEADY,
+  tagged, pickOp, MIX_STEADY, seedDevices,
 } from './lib/helpers.js';
 
 export const options = {
@@ -30,6 +30,13 @@ export const options = {
   },
   summaryTrendStats: ['avg', 'min', 'med', 'p(95)', 'p(99)', 'p(99.9)', 'max'],
 };
+
+// Pre-seed dos devices: garante >= 8 amostras por device antes do load, para
+// que as chamadas de anomaly nao retornem 404 "not enough samples" no cold
+// start (que contariam como http_req_failed e estourariam rate<0.001).
+export function setup() {
+  seedDevices();
+}
 
 export default function () {
   const id = deviceId();
