@@ -3,6 +3,9 @@
         {
             "id": "go",
             "repo_url": "https://github.com/gandarez/the_500mb_club_source_code"
+        }, {
+            "id": "python",
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_python"
         }
     ]
 }
