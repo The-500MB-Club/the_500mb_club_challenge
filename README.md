@@ -66,6 +66,10 @@ Este repositório contém **apenas a infraestrutura compartilhada**: 2 scripts d
 - Não é permitido o uso de modo privilegiado.
 - **Storage permitido**: `redis`, `postgres`, `mariadb` ou `mysql`. São os quatro engines que cabem de forma realista no orçamento de 500 MiB — outros bancos (Mongo, Cassandra, Elastic, ClickHouse, Cockroach, etc.) pedem 512 MiB–1 GiB só de heap e estouram o teto sozinhos. O motivo detalhado e o perfil de hardening de cada engine estão em [`SECURITY.md`](./SECURITY.md#storage-suportado-allowlist).
 
+## Pontuação
+
+A nota é **relativa a um perfil-alvo absoluto** (SLOs de latência + orçamento de 2 CPU / 500 MB), **não** à nenhuma implementação específica: **`100` = você atende o alvo**, acima disso = você o supera. O **score global** (média ponderada de 6 dimensões — eficiência, capacidade, latência p99, resiliência, footprint, estabilidade) decide o ranking, e cada dimensão dá uma **medalha** ao líder. O cálculo completo (cenários, pesos, alvos, o "joelho" de capacidade, o gate e a política de métrica ausente) está em [`SCORING.md`](./SCORING.md).
+
 ## O que cada submissão precisa entregar
 
 1. **Repositório público** com licença aprovada pela OSI (MIT, Apache-2.0, BSD, etc).
