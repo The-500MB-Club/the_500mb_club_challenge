@@ -18,6 +18,12 @@
         }, {
             "id": "cpp",
             "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_cpp"
+        }, {
+            "id": "nodejs",
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_nodejs"
+        }, {
+            "id": "elixir",
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_elixir"
         }
     ]
 }
