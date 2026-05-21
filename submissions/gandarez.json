@@ -2,7 +2,7 @@
     "submissions": [
         {
             "id": "go",
-            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code"
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_go"
         }, {
             "id": "python",
             "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_python"
