@@ -24,6 +24,9 @@
         }, {
             "id": "elixir",
             "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_elixir"
+        }, {
+            "id": "zig",
+            "repo_url": "https://github.com/gandarez/the_500mb_club_source_code_zig"
         }
     ]
 }
