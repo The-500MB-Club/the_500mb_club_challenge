@@ -1,0 +1,144 @@
+name: Auto benchmark on submission merge
+
+# ---------------------------------------------------------------------------
+# Ao mergear no branch padrão um PR que adiciona/atualiza submissions/<owner>.json,
+# abre automaticamente uma issue de benchmark `test/<owner>/<id>` para cada id
+# NOVO (presente na versão nova e ausente na anterior) e já aplica o label
+# `benchmark-request`. O daemon Pi-Bench (bench-runner) então executa o teste
+# pela primeira vez sem ação manual.
+#
+# Por que aplicar o label aqui (e não depender da gate):
+#   - Issues criadas com o GITHUB_TOKEN NÃO disparam outros workflows
+#     (proteção anti-recursão do GitHub Actions), então a gate
+#     (`issue-benchmark-gate.yml`) não rodaria para esta issue.
+#   - A submissão acabou de passar pelo `pr-security.yml` no merge, então
+#     replicamos só a validação mínima (o id existe no arquivo) e enfileiramos.
+#
+# O fluxo MANUAL (participante abre `test/<id>`; mantenedor abre
+# `test/<owner>/<id>`) continua intacto via a gate.
+#
+# O autor da issue é o `github-actions[bot]`, que está em TRUSTED_AUTHORS na
+# gate e no daemon (BR_TRUSTED_AUTHORS) — por isso a forma `test/<owner>/<id>`
+# é honrada apesar de autor != dono.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'submissions/**'
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: auto-benchmark-on-merge-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  open-benchmarks:
+    name: Open benchmark issues for new submission ids
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BEFORE_SHA: ${{ github.event.before }}
+      AFTER_SHA: ${{ github.event.after }}
+      ID_RE: '^[a-z0-9](([a-z0-9._-]{0,48}[a-z0-9])?)$'
+      OWNER_RE: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+    steps:
+      - name: Checkout (full history para diffar)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure benchmark-request label exists
+        run: |
+          set -uo pipefail
+          gh label create benchmark-request \
+            --color "0E8A16" \
+            --description "Validated benchmark request, awaiting daemon" \
+            --force >/dev/null 2>&1 || true
+
+      - name: Open issues for newly added ids
+        run: |
+          set -uo pipefail
+
+          zero="0000000000000000000000000000000000000000"
+
+          # Arquivos de submissão alterados no push. Em push inicial/branch novo
+          # o BEFORE vem zerado: tratamos todos os ids como novos.
+          if [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" == "$zero" ]]; then
+            changed="$(git ls-tree -r --name-only "$AFTER_SHA" -- submissions/ | grep -E '^submissions/[^/]+\.json$' || true)"
+            base_empty=1
+          else
+            changed="$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" -- submissions/ | grep -E '^submissions/[^/]+\.json$' || true)"
+            base_empty=0
+          fi
+
+          if [[ -z "$changed" ]]; then
+            echo "Nenhum submissions/<owner>.json alterado; nada a fazer."
+            exit 0
+          fi
+
+          ids_of() {
+            # Lê ids de um blob; tolera arquivo ausente/JSON inválido (lista vazia).
+            git show "$1" 2>/dev/null | jq -r '.submissions[]?.id // empty' 2>/dev/null | sort -u || true
+          }
+
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            owner="$(basename "$f" .json)"
+            if ! [[ "$owner" =~ $OWNER_RE ]]; then
+              echo "Owner inválido derivado de '$f' ('$owner'); pulando."
+              continue
+            fi
+
+            new_ids="$(ids_of "${AFTER_SHA}:${f}")"
+            if [[ "$base_empty" == "1" ]]; then
+              old_ids=""
+            else
+              old_ids="$(ids_of "${BEFORE_SHA}:${f}")"
+            fi
+
+            # ids presentes no novo e ausentes no antigo.
+            added="$(comm -23 <(printf '%s\n' "$new_ids" | sed '/^$/d') <(printf '%s\n' "$old_ids" | sed '/^$/d') || true)"
+            if [[ -z "$added" ]]; then
+              echo "Sem ids novos em $f."
+              continue
+            fi
+
+            while IFS= read -r id; do
+              [[ -z "$id" ]] && continue
+              if ! [[ "$id" =~ $ID_RE ]]; then
+                echo "id inválido '$id' em $f; pulando."
+                continue
+              fi
+              title="test/${owner}/${id}"
+
+              # Idempotência: não duplica se já existe issue com esse título.
+              existing="$(gh issue list --repo "$GH_REPO" --state all \
+                --search "in:title \"$title\"" --json title \
+                --jq "[.[] | select(.title == \"$title\")] | length" 2>/dev/null || echo 0)"
+              if [[ "${existing:-0}" != "0" ]]; then
+                echo "Issue '$title' já existe; pulando."
+                continue
+              fi
+
+              body="$(printf '%s\n' \
+                "Auto-disparado pelo merge de \`$f\` (id \`$id\`)." \
+                "" \
+                "Esta issue inicia o pipeline de benchmark no Raspberry Pi para a submissão recém-mergeada. O daemon Pi-Bench a executará na próxima passagem de polling." \
+                "" \
+                "Origem: commit \`$AFTER_SHA\`.")"
+
+              url="$(gh issue create --repo "$GH_REPO" \
+                --title "$title" \
+                --body "$body" \
+                --label benchmark-request)"
+              echo "Aberta: $url"
+              gh issue comment "$url" --body "✅ Auto-queued (id \`$id\`) com label \`benchmark-request\`. The Pi-Bench daemon will pick it up on the next polling pass."
+            done <<< "$added"
+          done <<< "$changed"

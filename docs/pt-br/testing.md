@@ -1,6 +1,8 @@
 # Testando no hardware real
 
-Quando sua submissão é mergeada no default branch, cada execução do PR já produz um benchmark inicial no Raspberry Pi. Este documento trata do **segundo caminho**: como pedir uma re-execução no daemon Pi-Bench abrindo uma issue no GitHub.
+Quando o PR da sua submissão é mergeado no default branch, um **benchmark inicial é enfileirado automaticamente**: o workflow [`submission-merged-benchmark.yml`](../../.github/workflows/submission-merged-benchmark.yml) abre uma issue `test/<owner>/<id>` (já com o label `benchmark-request`) para cada id **novo** no seu `submissions/<owner>.json`, e o daemon Pi-Bench a executa na próxima passagem de polling — sem nenhum passo manual.
+
+Este documento trata do **caminho manual**: como pedir uma re-execução no daemon Pi-Bench abrindo você mesmo uma issue no GitHub.
 
 ## Quando usar
 
@@ -21,6 +23,10 @@ Abra uma nova issue com:
 
 Há um issue form pronto em **New issue → Benchmark request** (`.github/ISSUE_TEMPLATE/benchmark-request.yml`).
 
+### Mantenedores: benchmarkando a submissão de outro usuário
+
+Mantenedores (e o `github-actions[bot]` usado pelo disparo automático) podem mirar uma submissão que **não** é sua usando o título estendido `test/<owner>/<id>` — por exemplo `test/gandarez/go`. O `<owner>` só é honrado quando o autor da issue está na lista de confiáveis (configurada em [`issue-benchmark-gate.yml`](../../.github/workflows/issue-benchmark-gate.yml) como `TRUSTED_AUTHORS` e no daemon como `BR_TRUSTED_AUTHORS`). Para todos os demais, só `test/<id>` (sua própria submissão) é aceito; um `test/<owner>/<id>` vindo de autor não-confiável é rejeitado.
+
 ## Ciclo de labels
 
 O workflow do gate ([`.github/workflows/issue-benchmark-gate.yml`](../../.github/workflows/issue-benchmark-gate.yml)) é a **única** origem confiável do label `benchmark-request`. O daemon Pi-Bench faz polling desse label, então é ele que controla a execução:
@@ -37,11 +43,12 @@ O gate roda em `opened`, `edited` e `reopened` — então, se você corrigir o t
 
 ## Por que um pedido pode ser rejeitado
 
-O gate rejeita com um comentário automático e fecha a issue (reason `not planned`) em três casos:
+O gate rejeita com um comentário automático e fecha a issue (reason `not planned`) nestes casos:
 
-1. **O login do autor não passa no formato de username do GitHub** (`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`). Extremamente raro; só ocorre em edge cases legados.
-2. **`submissions/<seu-login>.json` não está no default branch.** Ou você ainda não abriu um PR de submissão, ou ele ainda não foi mergeado. Abra um PR primeiro e aguarde o merge.
-3. **O `<id>` no título não existe em `submissions[].id`.** O comentário de rejeição lista os ids que realmente existem no seu arquivo — copie um deles e abra uma nova issue.
+1. **Você usou `test/<owner>/<id>` mas não é um mantenedor confiável.** Só autores confiáveis podem mirar a submissão de outro usuário; use `test/<id>` para a sua própria.
+2. **O owner-alvo não passa no formato de username do GitHub** (`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`). Extremamente raro; só ocorre em edge cases legados.
+3. **`submissions/<owner>.json` não está no default branch.** Ou nenhum PR de submissão foi aberto ainda, ou ele ainda não foi mergeado. Abra um PR primeiro e aguarde o merge.
+4. **O `<id>` no título não existe em `submissions[].id`.** O comentário de rejeição lista os ids que realmente existem no arquivo — copie um deles e abra uma nova issue.
 
 ## Modelo de segurança
 

@@ -1,6 +1,8 @@
 # Testing on real hardware
 
-Once your submission is merged on the default branch, every PR run already produces an initial benchmark on the Raspberry Pi. This document is about the **second path**: how to request a re-run on the Pi-Bench daemon by opening a GitHub issue.
+When your submission PR is merged on the default branch, an **initial benchmark is queued automatically**: the [`submission-merged-benchmark.yml`](../../.github/workflows/submission-merged-benchmark.yml) workflow opens a `test/<owner>/<id>` issue (already labelled `benchmark-request`) for every **new** id in your `submissions/<owner>.json`, and the Pi-Bench daemon runs it on the next polling pass — no manual step needed.
+
+This document is about the **manual path**: how to request a re-run on the Pi-Bench daemon by opening a GitHub issue yourself.
 
 ## When to use it
 
@@ -21,6 +23,10 @@ Open a new issue with:
 
 A pre-filled issue form is available under **New issue → Benchmark request** (`.github/ISSUE_TEMPLATE/benchmark-request.yml`).
 
+### Maintainers: benchmarking another user's submission
+
+Maintainers (and the `github-actions[bot]` used by the auto-trigger) may target a submission they do **not** own by using an extended title `test/<owner>/<id>` — for example `test/gandarez/go`. The `<owner>` is honored only when the issue author is in the trusted list (configured in [`issue-benchmark-gate.yml`](../../.github/workflows/issue-benchmark-gate.yml) as `TRUSTED_AUTHORS` and in the daemon as `BR_TRUSTED_AUTHORS`). For everyone else, only `test/<id>` (your own submission) is accepted; a `test/<owner>/<id>` from an untrusted author is rejected.
+
 ## The label lifecycle
 
 The gate workflow ([`.github/workflows/issue-benchmark-gate.yml`](../../.github/workflows/issue-benchmark-gate.yml)) is the **only** trusted source of the `benchmark-request` label. The Pi-Bench daemon polls for that label, so this is what gates execution:
@@ -37,11 +43,12 @@ The gate runs on `opened`, `edited`, and `reopened` — so if you fix the title 
 
 ## Why a request can be rejected
 
-The gate rejects with an automatic comment and closes the issue (reason `not planned`) in three cases:
+The gate rejects with an automatic comment and closes the issue (reason `not planned`) in these cases:
 
-1. **Author login fails the GitHub username format** (`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`). Extremely rare; only happens for legacy edge cases.
-2. **`submissions/<your-login>.json` is not on the default branch.** Either you have not opened a submission PR yet, or it has not been merged. Open a PR first and wait for the merge.
-3. **The `<id>` in the title does not exist in `submissions[].id`.** The rejection comment lists the ids actually present in your file — copy one of them and open a new issue.
+1. **You used `test/<owner>/<id>` but you are not a trusted maintainer.** Only trusted authors may target another user's submission; use `test/<id>` for your own.
+2. **The target owner fails the GitHub username format** (`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`). Extremely rare; only happens for legacy edge cases.
+3. **`submissions/<owner>.json` is not on the default branch.** Either no submission PR was opened yet, or it has not been merged. Open a PR first and wait for the merge.
+4. **The `<id>` in the title does not exist in `submissions[].id`.** The rejection comment lists the ids actually present in the file — copy one of them and open a new issue.
 
 ## Security model
 

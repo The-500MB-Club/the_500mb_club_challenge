@@ -3,9 +3,18 @@ name: Benchmark issue gate
 # ---------------------------------------------------------------------------
 # Valida pedidos de benchmark abertos via issue e aplica o label
 # `benchmark-request` somente quando:
-#   1. Título casa `test/<id>` (id no formato do schema da submissão).
-#   2. Existe `submissions/<issue.user.login>.json` no branch principal.
+#   1. Título casa `test/<id>` OU `test/<owner>/<id>` (id no formato do schema
+#      da submissão).
+#   2. Existe `submissions/<owner>.json` no branch principal, onde:
+#        - `test/<id>`         => owner = autor da issue (self-service);
+#        - `test/<owner>/<id>` => owner do título, MAS só se o autor da issue
+#          estiver em TRUSTED_AUTHORS (mantenedores + github-actions[bot]).
 #   3. O `<id>` extraído do título existe em `submissions[].id` daquele arquivo.
+#
+# A forma `test/<owner>/<id>` permite que um mantenedor (ou o disparo
+# automático no merge, via github-actions[bot]) abra a issue mirando a
+# submissão do dono real, sem a trava "autor == dono". Ver
+# `submission-merged-benchmark.yml` para o disparo automático.
 #
 # Em falha: comenta a razão, aplica `benchmark-rejected` e fecha a issue.
 # O daemon Pi-Bench (bench-runner) só pega issues com o label
@@ -15,7 +24,8 @@ name: Benchmark issue gate
 # Segurança:
 #   - Roda a partir do default branch (não há injeção do "PR" aqui).
 #   - Inputs do usuário (título, login) entram via env, não via ${{ }} em shell.
-#   - Login é re-validado por regex (^[A-Za-z0-9][A-Za-z0-9-]{0,38}$).
+#   - Login/owner são re-validados por regex (^[A-Za-z0-9][A-Za-z0-9-]{0,38}$).
+#   - Owner explícito só é honrado para autor confiável (TRUSTED_AUTHORS).
 #   - Token só com `issues: write` + `contents: read`.
 # ---------------------------------------------------------------------------
 
@@ -41,8 +51,12 @@ jobs:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       ISSUE_TITLE: ${{ github.event.issue.title }}
       ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-      # Regex do titulo: `test/<id>`, id como no resolve_submission.py.
-      TITLE_RE: '^test/[a-z0-9](([a-z0-9._-]{0,48}[a-z0-9])?)$'
+      # Regex do id (como no resolve_submission.py) e do owner (login GitHub).
+      ID_RE: '^[a-z0-9](([a-z0-9._-]{0,48}[a-z0-9])?)$'
+      OWNER_RE: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+      # Autores confiaveis que podem usar a forma `test/<owner>/<id>` mirando
+      # a submissao de outro usuario (espaco-separado, case-insensitive).
+      TRUSTED_AUTHORS: 'github-actions[bot] gandarez the500mbclub'
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -77,33 +91,86 @@ jobs:
           # Só processa issues cujo título tem alguma chance de ser pedido
           # de benchmark. Sem isso, qualquer issue normal cairia no fluxo
           # de "rejeitado" e seria fechada — ruim.
-          if [[ "$ISSUE_TITLE" =~ $TITLE_RE ]]; then
-            sub_id="${ISSUE_TITLE#test/}"
-            echo "in_scope=1" >> "$GITHUB_OUTPUT"
-            echo "submission_id=${sub_id}" >> "$GITHUB_OUTPUT"
-          else
+          #
+          # Duas formas aceitas:
+          #   test/<id>          -> owner = autor da issue
+          #   test/<owner>/<id>  -> owner explicito (honrado na validação só
+          #                         se o autor for confiável)
+          if [[ "$ISSUE_TITLE" != test/* ]]; then
             echo "in_scope=0" >> "$GITHUB_OUTPUT"
             echo "Issue fora de escopo (título: '$ISSUE_TITLE'); nada a fazer."
+            exit 0
           fi
+          rest="${ISSUE_TITLE#test/}"
+          # `<id>` nunca contém '/', então o primeiro '/' separa owner do id.
+          if [[ "$rest" == */* ]]; then
+            owner="${rest%%/*}"
+            sub_id="${rest#*/}"
+            explicit_owner=1
+          else
+            owner="$ISSUE_AUTHOR"
+            sub_id="$rest"
+            explicit_owner=0
+          fi
+          # Valida formatos (id sempre; owner só na forma explícita, pois na
+          # implícita o login do GitHub já é confiável).
+          if ! [[ "$sub_id" =~ $ID_RE ]]; then
+            echo "in_scope=0" >> "$GITHUB_OUTPUT"
+            echo "Título sem id válido ('$ISSUE_TITLE'); nada a fazer."
+            exit 0
+          fi
+          if [[ "$explicit_owner" == "1" ]] && ! [[ "$owner" =~ $OWNER_RE ]]; then
+            echo "in_scope=0" >> "$GITHUB_OUTPUT"
+            echo "Título com owner inválido ('$ISSUE_TITLE'); nada a fazer."
+            exit 0
+          fi
+          echo "in_scope=1" >> "$GITHUB_OUTPUT"
+          echo "submission_id=${sub_id}" >> "$GITHUB_OUTPUT"
+          echo "target_owner=${owner}" >> "$GITHUB_OUTPUT"
+          echo "explicit_owner=${explicit_owner}" >> "$GITHUB_OUTPUT"
 
       - name: Validate merged submission
         id: submission
         if: steps.scope.outputs.in_scope == '1'
         env:
           SUBMISSION_ID: ${{ steps.scope.outputs.submission_id }}
+          TARGET_OWNER: ${{ steps.scope.outputs.target_owner }}
+          EXPLICIT_OWNER: ${{ steps.scope.outputs.explicit_owner }}
         run: |
           set -uo pipefail
-          if ! [[ "$ISSUE_AUTHOR" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+
+          # Forma `test/<owner>/<id>`: só vale para autor confiável. Sem isso,
+          # qualquer um poderia disparar benchmark da submissão alheia.
+          if [[ "$EXPLICIT_OWNER" == "1" ]]; then
+            set -f  # noglob: `github-actions[bot]` tem `[..]` (classe de glob)
+            author_lc="$(printf '%s' "$ISSUE_AUTHOR" | tr '[:upper:]' '[:lower:]')"
+            is_trusted=0
+            for a in $TRUSTED_AUTHORS; do
+              a_lc="$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]')"
+              if [[ "$author_lc" == "$a_lc" ]]; then is_trusted=1; break; fi
+            done
+            if [[ "$is_trusted" != "1" ]]; then
+              echo "ok=0" >> "$GITHUB_OUTPUT"
+              {
+                echo 'reason<<EOF'
+                echo "Only trusted maintainers may target another user's submission via \`test/<owner>/<id>\`. Author \`$ISSUE_AUTHOR\` is not trusted — use \`test/<id>\` for your own submission."
+                echo 'EOF'
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          if ! [[ "$TARGET_OWNER" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
             echo "ok=0" >> "$GITHUB_OUTPUT"
             {
               echo 'reason<<EOF'
-              echo "The author login (\`$ISSUE_AUTHOR\`) does not pass GitHub username format validation."
+              echo "The target owner (\`$TARGET_OWNER\`) does not pass GitHub username format validation."
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          path="submissions/${ISSUE_AUTHOR}.json"
+          path="submissions/${TARGET_OWNER}.json"
           tmp=$(mktemp)
           if ! gh api "repos/${GH_REPO}/contents/${path}" \
                  -H "Accept: application/vnd.github.raw+json" \
